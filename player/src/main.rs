@@ -1,23 +1,30 @@
 mod cmd;
-mod udp;
+mod conn;
 
 use std::process::{Command, Stdio};
-
+use std::sync::{Arc, Mutex};
+use std::thread;
 fn main() {
-    let udp_dest = "192.168.0.59:1234";
+    let clients = Arc::new(Mutex::new(Vec::new()));
 
-    let arguments = cmd::audiocapture::get_audio_capture_command();
+    {
+        let clients = clients.clone();
+        thread::spawn(|| {
+            conn::server::create_connection_tcp(clients);
+        });
+    }
+
+    let args = cmd::audiocapture::get_audio_capture_command();
 
     let mut ffmpeg = Command::new("ffmpeg")
-        .args(arguments)
+        .args(args)
         .stdout(Stdio::piped())
         .stderr(Stdio::null())
         .spawn()
         .expect("Failed to start ffmpeg");
 
-    if let Some(stdout) = ffmpeg.stdout.take() {
-        udp::server::stream_ffmpeg_to_udp(stdout, udp_dest);
-    }
+    let stdout = ffmpeg.stdout.take().unwrap();
+    conn::server::stream_ffmpeg_to_udp(stdout, clients);
 
-    ffmpeg.wait().expect("FFmpeg exited unexpectedly");
+    let _ = ffmpeg.wait();
 }
