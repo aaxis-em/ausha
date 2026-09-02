@@ -17,6 +17,7 @@ import androidx.compose.runtime.*
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
@@ -108,7 +109,20 @@ fun AushaApp(links: MutableStateFlow<Pairing?>) {
         return
     }
 
-    Scaffold(topBar = { TopAppBar(title = { Text("Ausha") }) }) { padding ->
+    Scaffold(
+        topBar = {
+            TopAppBar(
+                title = { Text("Ausha") },
+                navigationIcon = {
+                    Icon(
+                        painterResource(R.drawable.ic_ausha_mark),
+                        contentDescription = null,
+                        modifier = Modifier.padding(horizontal = 16.dp),
+                    )
+                },
+            )
+        },
+    ) { padding ->
         Column(
             Modifier.padding(padding).padding(16.dp).fillMaxSize().verticalScroll(rememberScrollState()),
             verticalArrangement = Arrangement.spacedBy(12.dp),

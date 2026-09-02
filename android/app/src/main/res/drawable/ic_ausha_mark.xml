@@ -1,0 +1,25 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  The logo at 24dp, for the app bar and the status bar. The status bar flattens
+  it to a silhouette, where the logo's four thin rings collapse into each
+  other, so this draws two thicker ones instead.
+-->
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="24dp"
+    android:height="24dp"
+    android:viewportWidth="24"
+    android:viewportHeight="24">
+    <path
+        android:fillColor="#FFFFFF"
+        android:pathData="M12,13.7 L17.3,20.5 C17.6,20.9 17.4,21.3 17,21.3 H7 C6.6,21.3 6.4,20.9 6.7,20.5 Z" />
+    <path
+        android:strokeColor="#FFFFFF"
+        android:strokeWidth="1.6"
+        android:strokeLineCap="round"
+        android:pathData="M6.59,12.75 A5.6,5.6 0 0 1 17.41,12.75" />
+    <path
+        android:strokeColor="#FFFFFF"
+        android:strokeWidth="1.6"
+        android:strokeLineCap="round"
+        android:pathData="M3.11,13.68 A9.2,9.2 0 0 1 20.89,13.68" />
+</vector>

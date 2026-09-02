@@ -1,11 +1,23 @@
-# Ausha
+<p align="center">
+  <img src="assets/ausha@2x.png" alt="" width="89">
+</p>
 
-A real-time audio transportation mechanism — streams desktop audio to receivers
-on the local network as Opus over RTP.
+<h1 align="center">Ausha</h1>
+
+<p align="center">
+  A real-time audio transportation mechanism — streams desktop audio to
+  receivers on the local network as Opus over RTP.
+</p>
+
+<p align="center">
+  <a href="https://aaxis-em.github.io/ausha/">Website</a>
+</p>
 
 - `arch.md` — how it works
 - `plan.md` — roadmap, including the mobile receiver design
 - `CLAUDE.md` — code style rules
+- `index.html` — the project page. Serve it by setting GitHub Pages to deploy
+  from `main`, folder `/ (root)`.
 
 ## Status
 

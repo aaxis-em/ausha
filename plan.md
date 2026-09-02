@@ -1,3 +1,5 @@
+<img src="assets/ausha@2x.png" alt="" width="60" align="right">
+
 # Ausha — Mobile Receiver Design Plan
 
 Design plan for the network-side mobile receiver, plus the sender-side protocol

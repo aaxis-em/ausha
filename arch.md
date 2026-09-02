@@ -1,3 +1,5 @@
+<img src="assets/ausha@2x.png" alt="" width="60" align="right">
+
 # Ausha Architecture
 
 How the sender, the shared core, and the desktop receiver work today
