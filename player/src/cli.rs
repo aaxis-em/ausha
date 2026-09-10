@@ -14,8 +14,10 @@ pub struct Cli {
     pub sdp_out: Option<PathBuf>,
     pub compat_ts: Vec<SocketAddr>,
     pub name: String,
+    pub capture: Option<String>,
     pub no_discovery: bool,
     pub no_qr: bool,
+    pub encrypt: bool,
 }
 
 impl Default for Cli {
@@ -29,8 +31,10 @@ impl Default for Cli {
             sdp_out: None,
             compat_ts: Vec::new(),
             name: hostname(),
+            capture: None,
             no_discovery: false,
             no_qr: false,
+            encrypt: false,
         }
     }
 }
@@ -51,6 +55,10 @@ Options:
                           Repeatable. No pairing needed, so only use it on a
                           network you trust. Play it with:
                             mpv udp://0.0.0.0:<port>
+  --capture <device>      Capture this device instead of the detected one
+  --encrypt               Encrypt the media payload with ChaCha20-Poly1305,
+                          keyed by the pairing token. Ausha receivers follow
+                          automatically; ffplay and --sdp-out cannot
   --name <name>           Name advertised to receivers (default this host)
   --no-discovery          Do not advertise over mDNS
   --no-qr                 Do not print the pairing QR code
@@ -79,8 +87,10 @@ pub fn parse() -> Result<Cli, String> {
             "--sdp-out" => cli.sdp_out = Some(PathBuf::from(value()?)),
             "--compat-ts" => cli.compat_ts.push(parse_with(&flag, &value()?)?),
             "--name" => cli.name = value()?,
+            "--capture" => cli.capture = Some(value()?),
             "--no-discovery" => cli.no_discovery = true,
             "--no-qr" => cli.no_qr = true,
+            "--encrypt" => cli.encrypt = true,
             other => return Err(format!("unknown argument: {other}")),
         }
     }

@@ -24,8 +24,10 @@
 The sender captures desktop audio, encodes Opus in 20 ms frames, and fans the
 RTP stream out to every paired receiver. The desktop receiver plays it back
 with a jitter buffer, FEC recovery, loss concealment and clock-drift
-correction. The Android app does the same on a phone, with mDNS discovery and
-QR pairing. iOS is not built yet; it will reuse the same Rust crates.
+correction. The Android app does the same on a phone, with mDNS discovery, QR
+pairing and lock-screen controls. The media path can be encrypted with
+ChaCha20-Poly1305 keyed by the pairing token. iOS is not built yet; it will
+reuse the same Rust crates.
 
 ## Layout
 
@@ -45,7 +47,12 @@ ffmpeg built with `libopus`, plus a loopback audio device.
 | Platform | Capture | State |
 |---|---|---|
 | Linux | PulseAudio monitor source | working |
-| Windows | DirectShow loopback device | not implemented |
+| Windows | DirectShow loopback device | written, never run on Windows |
+
+Windows ships no loopback device, so install
+[virtual-audio-capturer](https://github.com/rdp/screen-capture-recorder-to-video-windows-free)
+or enable *Stereo Mix* under Sound settings → Recording. The sender finds
+either on its own; `--capture "<device name>"` names one by hand.
 
 The receiver additionally needs one of `pacat`, `aplay` or `ffplay` for output.
 
@@ -167,6 +174,11 @@ signal is weak. The stats below show what playback is actually doing.
 Playback continues with the screen off, holds a low-latency WiFi lock so the
 radio does not park between beacons, and pauses for calls.
 
+Headset buttons, the lock screen and the system media panel control it through
+a MediaSession: play, pause and stop. Unplugging headphones pauses rather than
+playing out loud. Pause leaves the sender — a live stream has no backlog to
+resume from — so play reconnects.
+
 ## Play it on Android without the app
 
 mpv or VLC can receive a plain MPEG-TS stream with nothing to install and no
@@ -216,10 +228,47 @@ writes the session description ffplay needs.
 --static-client <addr>  Always send media to this ip:port, no handshake required
 --sdp-out <path>        Write an SDP for --static-client, playable with ffplay
 --compat-ts <ip:port>   Also push MPEG-TS to this address for mpv or VLC (repeatable)
+--capture <device>      Capture this device instead of the detected one
+--encrypt               Encrypt the media payload with ChaCha20-Poly1305
 --name <name>           Name advertised to receivers (default this host)
 --no-discovery          Do not advertise over mDNS
 --qr                    Print a QR code of the pairing link
 ```
+
+---
+
+## Encrypt the stream
+
+Desktop audio can be a private call, and a LAN is not a security boundary —
+a coffee shop's WiFi is a LAN. `--encrypt` wraps the audio in
+ChaCha20-Poly1305, keyed by the pairing token both ends already share:
+
+```bash
+cargo run --release --bin ausha -- --encrypt
+```
+
+Receivers need no flag; the sender names the cipher during pairing and they
+follow. The RTP header stays readable so Wireshark can still show you loss and
+jitter, but the audio does not leave the machine in the clear.
+
+It is off by default because it is what stops the `ffplay` path above working —
+turn it on for real listening, leave it off while debugging the stream. It does
+not apply to `--compat-ts`, which skips pairing entirely.
+
+---
+
+## Soak it
+
+```bash
+./scripts/soak.sh -n 8 -d 240 -l 3 -e
+```
+
+Runs eight receivers against one sender for four minutes with 3% of each
+receiver's packets dropped and the stream encrypted, then fails if any of them
+underran or played silence. `-h` lists the options.
+
+Loss on its own is not a failure — absorbing it is the receiver's whole job.
+Underruns and silent frames are, because those are what a listener hears.
 
 ---
 

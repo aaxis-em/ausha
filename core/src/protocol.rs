@@ -2,7 +2,7 @@
 
 use serde::{Deserialize, Serialize};
 
-use crate::config;
+use crate::{config, crypto};
 
 #[derive(Debug, Serialize, Deserialize)]
 #[serde(tag = "t", rename_all = "snake_case")]
@@ -49,6 +49,19 @@ pub struct StreamParams {
     pub payload_type: u8,
     pub ssrc: u32,
     pub fec: bool,
+    /// Absent on a plaintext stream, which is what a sender without
+    /// `--encrypt` produces and what `ffplay` can still play.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub encryption: Option<Encryption>,
+}
+
+/// How the media path is protected, named by the sender in `accept` so the
+/// receiver can derive the same key from the pairing token it already holds.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct Encryption {
+    pub cipher: String,
+    /// Hex, fresh per run.
+    pub salt: String,
 }
 
 impl StreamParams {
@@ -61,7 +74,20 @@ impl StreamParams {
             payload_type: config::RTP_PAYLOAD_TYPE,
             ssrc,
             fec: true,
+            encryption: None,
         }
+    }
+
+    /// Derives the session key this stream's `accept` describes, or `None` when
+    /// the sender is not encrypting.
+    pub fn key(&self, token: &str) -> Result<Option<crypto::Key>, crypto::Error> {
+        let Some(encryption) = &self.encryption else {
+            return Ok(None);
+        };
+        if encryption.cipher != crypto::CIPHER {
+            return Err(crypto::Error::UnknownCipher(encryption.cipher.clone()));
+        }
+        crypto::derive_key(token, &encryption.salt).map(Some)
     }
 }
 

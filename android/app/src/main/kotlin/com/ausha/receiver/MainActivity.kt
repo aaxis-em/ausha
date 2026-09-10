@@ -61,7 +61,7 @@ fun AushaApp(links: MutableStateFlow<Pairing?>) {
     var scanning by rememberSaveable { mutableStateOf(false) }
     var latency by rememberSaveable { mutableStateOf(AudioEngine.Latency.Balanced) }
     var stats by remember { mutableStateOf(Stats()) }
-    var state by remember { mutableStateOf(Playback.state) }
+    val state by Playback.state.collectAsState()
 
     val notifications = if (Build.VERSION.SDK_INT >= 33) {
         rememberPermissionState(Manifest.permission.POST_NOTIFICATIONS)
@@ -85,7 +85,6 @@ fun AushaApp(links: MutableStateFlow<Pairing?>) {
         notifications?.takeIf { !it.status.isGranted }?.launchPermissionRequest()
         while (true) {
             stats = Playback.engine.stats
-            state = Playback.state
             delay(500)
         }
     }

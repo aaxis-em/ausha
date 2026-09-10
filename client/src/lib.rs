@@ -17,6 +17,7 @@ use std::sync::{Arc, Mutex};
 use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
+use ausha_core::crypto::Opener;
 use ausha_core::pipeline::Pipeline;
 
 pub struct Config {
@@ -83,13 +84,18 @@ impl Client {
             running: Arc::new(AtomicBool::new(true)),
         };
 
+        let opener = params
+            .key(&config.token)
+            .map_err(io::Error::other)?
+            .map(|key| Opener::new(&key));
+
         let (arrivals, incoming) = mpsc::channel();
         let media = session.media.try_clone()?;
         let mut threads = Vec::new();
         threads.push(thread::spawn({
             let running = monitor.running.clone();
             let loss = config.simulate_loss;
-            move || receive_datagrams(media, arrivals, loss, running)
+            move || receive_datagrams(media, arrivals, loss, opener, running)
         }));
         threads.push(thread::spawn({
             let monitor = monitor.clone();
@@ -153,16 +159,24 @@ impl Drop for Client {
 
 /// Hands datagrams to the playback thread without ever blocking it, the shape
 /// a real audio callback needs.
+///
+/// Decryption happens here rather than in the pipeline so that the pipeline
+/// only ever sees plaintext RTP, whatever the transport did.
 fn receive_datagrams(
     media: UdpSocket,
     arrivals: Sender<Arrival>,
     simulate_loss: u32,
+    mut opener: Option<Opener>,
     running: Arc<AtomicBool>,
 ) {
     let mut buf = [0u8; ausha_core::config::MAX_DATAGRAM];
     // Independent random loss, not every Nth packet: periodic dropping never
     // produces the consecutive runs that are the hard case for a jitter buffer.
-    let mut rng = 0x2545_f491_4f6c_dd1du64;
+    // The seed mixes in the media port, which the kernel guarantees is unique
+    // on this host, so receivers soaking side by side against one sender drop
+    // different packets rather than the same ones.
+    let port = media.local_addr().map(|a| a.port()).unwrap_or_default();
+    let mut rng = (now_us() ^ (u64::from(port) << 48)) | 1;
     while running.load(Ordering::Relaxed) {
         let Ok((n, _)) = media.recv_from(&mut buf) else {
             continue;
@@ -173,7 +187,16 @@ fn receive_datagrams(
         if simulate_loss > 0 && rng % 100 < u64::from(simulate_loss) {
             continue;
         }
-        if arrivals.send((buf[..n].to_vec(), now_us())).is_err() {
+        // A packet that does not authenticate is dropped, which the jitter
+        // buffer already treats exactly as it treats one that never arrived.
+        let datagram = match &mut opener {
+            Some(opener) => match opener.open(&buf[..n]) {
+                Some(plain) => plain,
+                None => continue,
+            },
+            None => buf[..n].to_vec(),
+        };
+        if arrivals.send((datagram, now_us())).is_err() {
             return;
         }
     }

@@ -1,5 +1,10 @@
 //! Spawns ffmpeg to encode desktop audio as Opus and emit it as an RTP stream.
 
+/// Compiled on Linux too so its parsing can be tested there, since the
+/// listing it reads is the same text whatever host produced it.
+#[cfg(any(windows, test))]
+pub mod dshow;
+mod lifetime;
 pub mod source;
 
 use std::io;
@@ -10,6 +15,8 @@ use std::process::{Child, Command, Stdio};
 use ausha_core::config;
 
 pub struct Settings {
+    /// Overrides detection when the user names a device themselves.
+    pub device: Option<String>,
     pub bitrate_kbps: u32,
     pub ssrc: u32,
     pub ingest: SocketAddr,
@@ -19,50 +26,41 @@ pub struct Settings {
 
 /// Owns the ffmpeg child so that it is killed whenever the sender stops,
 /// rather than being orphaned and left holding the capture device.
-pub struct Encoder(Child);
+pub struct Encoder {
+    child: Child,
+    _lifetime: lifetime::Guard,
+}
 
 impl Encoder {
     pub fn exit_status(&mut self) -> io::Result<Option<ExitStatus>> {
-        self.0.try_wait()
+        self.child.try_wait()
     }
 }
 
 impl Drop for Encoder {
     fn drop(&mut self) {
-        let _ = self.0.kill();
-        let _ = self.0.wait();
+        let _ = self.child.kill();
+        let _ = self.child.wait();
     }
 }
 
 pub fn spawn(settings: &Settings) -> io::Result<Encoder> {
-    let input = source::detect()?;
+    let input = match &settings.device {
+        Some(device) => source::named(device.clone()),
+        None => source::detect()?,
+    };
     println!("capture: {} source {}", input.format, input.device);
     let mut command = Command::new("ffmpeg");
     command
         .args(build_args(&input, settings))
         .stdout(Stdio::null())
         .stderr(Stdio::inherit());
-    tie_lifetime_to_parent(&mut command);
-    command.spawn().map(Encoder)
-}
+    lifetime::before_spawn(&mut command);
 
-/// Asks the kernel to kill ffmpeg when this process dies, so a signal the
-/// sender cannot handle still cannot leave ffmpeg holding the capture device.
-#[cfg(target_os = "linux")]
-fn tie_lifetime_to_parent(command: &mut Command) {
-    use std::os::unix::process::CommandExt;
-    unsafe {
-        command.pre_exec(
-            || match libc::prctl(libc::PR_SET_PDEATHSIG, libc::SIGKILL) {
-                -1 => Err(io::Error::last_os_error()),
-                _ => Ok(()),
-            },
-        );
-    }
+    let child = command.spawn()?;
+    let _lifetime = lifetime::after_spawn(&child);
+    Ok(Encoder { child, _lifetime })
 }
-
-#[cfg(not(target_os = "linux"))]
-fn tie_lifetime_to_parent(_command: &mut Command) {}
 
 #[rustfmt::skip]
 fn build_args(input: &source::Input, settings: &Settings) -> Vec<String> {

@@ -434,9 +434,7 @@ so a cpal backend drops in without touching the pipeline.
       recoveries, concealments, underruns, clock correction
 - [x] Latency presets Low / Balanced / Stable, plumbed from the Compose UI
       through JNI into the jitter buffer's depth range
-- [ ] MediaSession for lock-screen and headset controls — **not done**. The
-      notification carries a Stop action and audio focus is handled, but there
-      is no `MediaSession`, so headset buttons do nothing.
+- [x] MediaSession for lock-screen and headset controls (done in Phase 4)
 
 Deviations and findings:
 
@@ -454,11 +452,49 @@ Deviations and findings:
    `LocalLifecycleOwner` this Compose version does not provide. Dropped for
    plain `collectAsState` rather than pinning a fragile version pair.
 
-**Phase 4 — Hardening**
-- [ ] MediaSession (carried over from Phase 3)
-- ChaCha20-Poly1305 payload encryption behind a flag
-- Multi-client soak test
-- Windows sender (`capture/source.rs` returns an error on Windows)
+**Phase 4 — Hardening — DONE**
+- [x] MediaSession (carried over from Phase 3): `MediaSessionCompat` owning
+      play/pause/stop, a `MediaStyle` notification, and pause on
+      `ACTION_AUDIO_BECOMING_NOISY`
+- [x] ChaCha20-Poly1305 payload encryption behind `--encrypt`. The 12-byte RTP
+      header stays clear and is authenticated as associated data; the key is
+      PBKDF2-SHA256 over the pairing token with a per-run salt the sender names
+      in `accept`
+- [x] `scripts/soak.sh`: N receivers against one sender, failing on any
+      underrun or silent frame
+- [x] Windows sender: DirectShow loopback detection, a `--capture` override,
+      and a job object so ffmpeg cannot outlive the sender there either
+- *Done:* eight encrypted receivers played 240 s at 3% injected loss with 0
+  underruns and 0 silent frames; on an emulator against the same sender,
+  encrypted playback held 102 ms latency at 0.00% loss and headset keys drove
+  the session through play, pause and stop
+
+Five things this phase found:
+
+1. **The nonce needs the rollover counter, not the 16-bit sequence.** RTP
+   sequence numbers wrap every 22 minutes, and a nonce that wrapped with them
+   would repeat under one key — the failure ChaCha20-Poly1305 does not
+   survive. The extended sequence goes in the nonce instead.
+2. **The rollover counter must only advance on packets that authenticate.**
+   Extending it first would let one forged sequence number walk it away from
+   the sender's and break every genuine packet after it. `SequenceExtender`
+   was split into `peek` and `commit` for this.
+3. **`onLost` fires for networks we were not using.** A phone holding both WiFi
+   and mobile data raises it for whichever one drops, and the reconnect logic
+   was cutting playback on a device that had lost nothing. It now watches the
+   default network.
+4. **A media button starts the service.** `MediaButtonReceiver` starts it as a
+   foreground service to deliver a headset press, so it has to reach the
+   foreground even when there is nothing to resume, or the platform kills it.
+5. **Simulated loss was identical across receivers.** The RNG seed was a
+   constant, so every receiver in a soak dropped the same packets — exactly
+   what a multi-client test needs not to happen. It is seeded from the clock
+   and the media port now.
+
+Deviation from the plan: §2.6 suggested keying straight from the pairing code.
+A 48-bit token derived cheaply is a few GPU-hours to brute force offline, so
+the derivation is PBKDF2 at 200k rounds, which costs one handshake a couple of
+hundred milliseconds and puts that out of reach.
 
 **Phase 5 — iOS**
 

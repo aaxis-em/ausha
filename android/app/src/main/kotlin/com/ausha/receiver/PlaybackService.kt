@@ -5,34 +5,53 @@ import android.app.NotificationChannel
 import android.app.NotificationManager
 import android.app.PendingIntent
 import android.app.Service
+import android.content.BroadcastReceiver
 import android.content.Context
 import android.content.Intent
+import android.content.IntentFilter
 import android.content.pm.ServiceInfo
 import android.media.AudioAttributes
 import android.media.AudioFocusRequest
 import android.media.AudioManager
 import android.net.ConnectivityManager
 import android.net.Network
-import android.net.NetworkCapabilities
-import android.net.NetworkRequest
 import android.net.wifi.WifiManager
 import android.os.Build
 import android.os.IBinder
 import android.os.PowerManager
+import android.support.v4.media.session.PlaybackStateCompat
 import android.util.Log
+import androidx.core.app.NotificationCompat
+import androidx.core.content.ContextCompat
+import androidx.media.session.MediaButtonReceiver
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.cancel
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.launch
 
 /**
- * Keeps playback alive with the screen off, and holds the locks that stop the
- * platform quietly ruining latency.
+ * Keeps playback alive with the screen off, holds the locks that stop the
+ * platform quietly ruining latency, and owns the MediaSession that headset
+ * buttons and the lock screen talk to.
  */
-class PlaybackService : Service() {
+class PlaybackService : Service(), Transport.Controls {
 
     private lateinit var audioManager: AudioManager
+    private lateinit var transport: Transport
+    private val scope = CoroutineScope(Dispatchers.Main.immediate)
     private var wifiLock: WifiManager.WifiLock? = null
     private var wakeLock: PowerManager.WakeLock? = null
     private var focusRequest: AudioFocusRequest? = null
     private var networkCallback: ConnectivityManager.NetworkCallback? = null
     private var target: Target? = null
+
+    /**
+     * Set while the user paused deliberately, so that regaining audio focus or
+     * a network coming back does not restart a stream they stopped on purpose.
+     */
+    private var paused = false
 
     private data class Target(
         val host: String,
@@ -42,19 +61,32 @@ class PlaybackService : Service() {
         val latency: AudioEngine.Latency,
     )
 
+    /** Unplugging headphones should pause rather than play out loud. */
+    private val becomingNoisy = object : BroadcastReceiver() {
+        override fun onReceive(context: Context?, intent: Intent?) = onPause()
+    }
+
     override fun onBind(intent: Intent?): IBinder? = null
 
     override fun onCreate() {
         super.onCreate()
         audioManager = getSystemService(Context.AUDIO_SERVICE) as AudioManager
+        transport = Transport(this, this)
         createChannel()
+        ContextCompat.registerReceiver(
+            this,
+            becomingNoisy,
+            IntentFilter(AudioManager.ACTION_AUDIO_BECOMING_NOISY),
+            ContextCompat.RECEIVER_NOT_EXPORTED,
+        )
+        scope.launch { Playback.state.collect(::onEngineState) }
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         when (intent?.action) {
+            Intent.ACTION_MEDIA_BUTTON -> return onMediaButton(intent)
             ACTION_STOP -> {
-                stopPlayback()
-                stopSelf()
+                onStop()
                 return START_NOT_STICKY
             }
         }
@@ -75,12 +107,26 @@ class PlaybackService : Service() {
             stopPlayback()
         }
         target = next
+        transport.describe(next.host)
 
         startForegroundCompat()
-        acquireLocks()
+        // Playing first: registering the callback reports the current default
+        // network straight away, and that arrives as a reconnect if the engine
+        // is not already running.
+        onPlay()
         watchNetwork()
-        if (requestFocus()) startPlayback()
         return START_STICKY
+    }
+
+    /**
+     * The system starts the service to deliver a media button, so it has to
+     * reach the foreground even when there is nothing to resume.
+     */
+    private fun onMediaButton(intent: Intent): Int {
+        startForegroundCompat()
+        transport.handleMediaButton(intent)
+        if (target == null) stopSelf()
+        return START_NOT_STICKY
     }
 
     override fun onDestroy() {
@@ -88,7 +134,37 @@ class PlaybackService : Service() {
         releaseLocks()
         unwatchNetwork()
         abandonFocus()
+        unregisterReceiver(becomingNoisy)
+        transport.release()
+        scope.cancel()
         super.onDestroy()
+    }
+
+    override fun onPlay() {
+        paused = false
+        acquireLocks()
+        if (requestFocus()) startPlayback()
+    }
+
+    override fun onPause() {
+        paused = true
+        stopPlayback()
+        abandonFocus()
+        releaseLocks()
+    }
+
+    override fun onStop() {
+        paused = false
+        stopPlayback()
+        stopSelf()
+    }
+
+    private fun onEngineState(state: AudioEngine.State) {
+        transport.publish(state, Playback.engine.failure)
+        if (target != null) {
+            getSystemService(NotificationManager::class.java)
+                .notify(NOTIFICATION_ID, buildNotification(state))
+        }
     }
 
     private fun startPlayback() {
@@ -107,7 +183,7 @@ class PlaybackService : Service() {
     }
 
     private fun startForegroundCompat() {
-        val notification = buildNotification()
+        val notification = buildNotification(Playback.state.value)
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
             startForeground(
                 NOTIFICATION_ID,
@@ -119,27 +195,55 @@ class PlaybackService : Service() {
         }
     }
 
-    private fun buildNotification(): Notification {
+    private fun buildNotification(state: AudioEngine.State): Notification {
         val open = PendingIntent.getActivity(
             this,
             0,
             Intent(this, MainActivity::class.java),
             PendingIntent.FLAG_IMMUTABLE,
         )
-        val stop = PendingIntent.getService(
+        val stop = MediaButtonReceiver.buildMediaButtonPendingIntent(
             this,
-            1,
-            Intent(this, PlaybackService::class.java).setAction(ACTION_STOP),
-            PendingIntent.FLAG_IMMUTABLE,
+            PlaybackStateCompat.ACTION_STOP,
         )
-        return Notification.Builder(this, CHANNEL_ID)
+        val live = state == AudioEngine.State.Playing || state == AudioEngine.State.Connecting
+        val toggle = NotificationCompat.Action(
+            if (live) R.drawable.ic_pause else R.drawable.ic_play,
+            if (live) "Pause" else "Play",
+            MediaButtonReceiver.buildMediaButtonPendingIntent(
+                this,
+                PlaybackStateCompat.ACTION_PLAY_PAUSE,
+            ),
+        )
+
+        return NotificationCompat.Builder(this, CHANNEL_ID)
             .setContentTitle(getString(R.string.app_name))
-            .setContentText(target?.host?.let { "Streaming from $it" } ?: "Streaming")
+            .setContentText(describe(state))
             .setSmallIcon(R.drawable.ic_ausha_mark)
             .setContentIntent(open)
-            .addAction(Notification.Action.Builder(null, "Stop", stop).build())
-            .setOngoing(true)
+            .addAction(toggle)
+            .addAction(NotificationCompat.Action(R.drawable.ic_stop, "Stop", stop))
+            .setStyle(
+                androidx.media.app.NotificationCompat.MediaStyle()
+                    .setMediaSession(transport.token)
+                    .setShowActionsInCompactView(0, 1)
+                    .setShowCancelButton(true)
+                    .setCancelButtonIntent(stop)
+            )
+            .setVisibility(NotificationCompat.VISIBILITY_PUBLIC)
+            .setOngoing(live)
             .build()
+    }
+
+    private fun describe(state: AudioEngine.State): String {
+        val host = target?.host ?: return "Not connected"
+        return when (state) {
+            AudioEngine.State.Playing -> "Streaming from $host"
+            AudioEngine.State.Connecting -> "Connecting to $host…"
+            AudioEngine.State.Failed -> Playback.engine.failure ?: "Playback failed"
+            AudioEngine.State.Idle, AudioEngine.State.Stopped ->
+                if (paused) "Paused" else "Not streaming"
+        }
     }
 
     private fun createChannel() {
@@ -159,6 +263,7 @@ class PlaybackService : Service() {
      * problem we caused ourselves.
      */
     private fun acquireLocks() {
+        if (wifiLock != null) return
         val wifi = applicationContext.getSystemService(Context.WIFI_SERVICE) as WifiManager
         val mode = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
             WifiManager.WIFI_MODE_FULL_LOW_LATENCY
@@ -195,12 +300,10 @@ class PlaybackService : Service() {
             .setAudioAttributes(attributes)
             .setOnAudioFocusChangeListener { change ->
                 when (change) {
-                    AudioManager.AUDIOFOCUS_LOSS -> {
-                        stopPlayback()
-                        stopSelf()
-                    }
+                    AudioManager.AUDIOFOCUS_LOSS -> onStop()
                     AudioManager.AUDIOFOCUS_LOSS_TRANSIENT -> stopPlayback()
-                    AudioManager.AUDIOFOCUS_GAIN -> if (!Playback.engine.isRunning) startPlayback()
+                    AudioManager.AUDIOFOCUS_GAIN ->
+                        if (!paused && !Playback.engine.isRunning) startPlayback()
                 }
             }
             .build()
@@ -218,29 +321,30 @@ class PlaybackService : Service() {
      * local address and silently strands the UDP socket. Reconnecting is the
      * only way back; the sender's keepalive would otherwise take ten seconds
      * to notice on its side.
+     *
+     * This watches the default network rather than every network with
+     * internet: a phone holding both WiFi and mobile data raises `onLost` for
+     * whichever it drops, and stopping playback for a network we were not
+     * using cut the stream on a device that had not lost anything.
      */
     private fun watchNetwork() {
-        val connectivity = getSystemService(ConnectivityManager::class.java)
+        if (networkCallback != null) return
         val callback = object : ConnectivityManager.NetworkCallback() {
             override fun onAvailable(network: Network) {
-                if (!Playback.engine.isRunning && target != null) {
-                    Log.i(TAG, "network back, reconnecting")
+                if (!paused && !Playback.engine.isRunning && target != null) {
+                    Log.i(TAG, "default network back, reconnecting")
                     startPlayback()
                 }
             }
 
             override fun onLost(network: Network) {
-                Log.i(TAG, "network lost")
+                Log.i(TAG, "default network lost")
                 stopPlayback()
             }
         }
         networkCallback = callback
-        connectivity.registerNetworkCallback(
-            NetworkRequest.Builder()
-                .addCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET)
-                .build(),
-            callback,
-        )
+        getSystemService(ConnectivityManager::class.java)
+            .registerDefaultNetworkCallback(callback)
     }
 
     private fun unwatchNetwork() {
@@ -288,7 +392,9 @@ class PlaybackService : Service() {
 
 /** One engine for the process, shared by the service and the UI. */
 object Playback {
-    @Volatile var state: AudioEngine.State = AudioEngine.State.Idle; private set
+    private val current = MutableStateFlow(AudioEngine.State.Idle)
 
-    val engine = AudioEngine { state = it }
+    val state: StateFlow<AudioEngine.State> = current
+
+    val engine = AudioEngine { current.value = it }
 }

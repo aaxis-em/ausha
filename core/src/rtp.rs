@@ -74,26 +74,44 @@ pub struct SequenceExtender {
 
 impl SequenceExtender {
     pub fn extend(&mut self, sequence: u16) -> u64 {
+        let extended = self.peek(sequence);
+        self.commit(sequence);
+        extended
+    }
+
+    /// The value [`extend`](Self::extend) would return, without recording the
+    /// sequence number. Splitting the two lets a caller that can still reject
+    /// the packet — decryption, say — extend it before deciding to trust it.
+    pub fn peek(&self, sequence: u16) -> u64 {
         if !self.started {
-            self.started = true;
-            self.highest = sequence;
             return u64::from(sequence);
         }
-
-        let ahead = sequence.wrapping_sub(self.highest);
-        let behind = self.highest.wrapping_sub(sequence);
-
-        if ahead <= behind {
-            if sequence < self.highest {
-                self.cycles += 1;
-            }
-            self.highest = sequence;
-            (self.cycles << 16) | u64::from(sequence)
+        if self.moves_forward(sequence) {
+            let cycles = self.cycles + u64::from(sequence < self.highest);
+            (cycles << 16) | u64::from(sequence)
         } else if sequence > self.highest && self.cycles > 0 {
             ((self.cycles - 1) << 16) | u64::from(sequence)
         } else {
             (self.cycles << 16) | u64::from(sequence)
         }
+    }
+
+    pub fn commit(&mut self, sequence: u16) {
+        if !self.started {
+            self.started = true;
+            self.highest = sequence;
+        } else if self.moves_forward(sequence) {
+            if sequence < self.highest {
+                self.cycles += 1;
+            }
+            self.highest = sequence;
+        }
+    }
+
+    /// True when `sequence` is closer ahead of the highest seen than behind
+    /// it, which is how a wrap is told apart from a late packet.
+    fn moves_forward(&self, sequence: u16) -> bool {
+        sequence.wrapping_sub(self.highest) <= self.highest.wrapping_sub(sequence)
     }
 }
 
