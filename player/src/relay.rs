@@ -7,6 +7,7 @@ use std::sync::Arc;
 
 use crate::registry::Registry;
 use ausha_core::config;
+use ausha_core::crypto::Sealer;
 
 pub fn listen_for_punch(socket: Arc<UdpSocket>, registry: Arc<Registry>) {
     let mut buf = [0u8; config::MAX_DATAGRAM];
@@ -36,13 +37,32 @@ fn parse_punch(datagram: &[u8]) -> Option<u64> {
 
 /// Forwards one RTP packet per datagram. ffmpeg emits exactly one Opus frame
 /// per packet, so a datagram lost in flight costs the receiver one frame.
-pub fn forward(ingest: &UdpSocket, media: &UdpSocket, registry: &Registry) -> io::Result<()> {
+///
+/// Sealing happens once per packet rather than once per receiver: every
+/// receiver of this run shares the session key.
+pub fn forward(
+    ingest: &UdpSocket,
+    media: &UdpSocket,
+    registry: &Registry,
+    sealer: Option<&mut Sealer>,
+) -> io::Result<()> {
     let mut buf = [0u8; config::MAX_DATAGRAM];
-    if let Some(packet) = receive(ingest, &mut buf)? {
-        registry.for_each_target(|target| {
-            let _ = media.send_to(packet, target);
-        });
-    }
+    let Some(packet) = receive(ingest, &mut buf)? else {
+        return Ok(());
+    };
+    let sealed = match sealer {
+        Some(sealer) => match sealer.seal(packet) {
+            Some(sealed) => Some(sealed),
+            // Too short to carry an RTP header, so not something we produced.
+            // Passing it on in the clear would leak past the flag.
+            None => return Ok(()),
+        },
+        None => None,
+    };
+    let outgoing = sealed.as_deref().unwrap_or(packet);
+    registry.for_each_target(|target| {
+        let _ = media.send_to(outgoing, target);
+    });
     Ok(())
 }
 

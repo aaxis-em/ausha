@@ -10,6 +10,14 @@ pub fn random_ssrc() -> u32 {
     (random_u64() as u32 & 0x7fff_ffff) | 1
 }
 
+/// Fresh per run, so a fixed `--token` still yields a different session key
+/// every time the sender starts.
+pub fn random_salt() -> String {
+    let mut bytes = [0u8; ausha_core::crypto::SALT_LEN];
+    getrandom::fill(&mut bytes).expect("system randomness unavailable");
+    bytes.iter().map(|b| format!("{b:02x}")).collect()
+}
+
 pub fn random_token() -> String {
     let value = random_u64() & 0xffff_ffff_ffff;
     format!("{value:012x}")

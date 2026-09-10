@@ -156,6 +156,8 @@ All under `player/src/`.
 | `config.rs` | Stream and protocol constants |
 | `capture/mod.rs` | Builds the ffmpeg command line and owns the child process |
 | `capture/source.rs` | Finds the platform's loopback audio device |
+| `capture/dshow.rs` | Reads ffmpeg's DirectShow device list on Windows |
+| `capture/lifetime.rs` | Ties ffmpeg's lifetime to the sender's, per platform |
 | `control.rs` | TCP control server: handshake, auth, keepalive |
 | `protocol.rs` | Control message types |
 | `lines.rs` | Newline framing that tolerates read timeouts |
@@ -189,7 +191,8 @@ receiver                                             sender
    │──── {"t":"hello","ver":1,"name":..,"token":..} ────▶│
    │                                                    │  verify token
    │◀─── {"t":"accept","session":"<16 hex>",             │  create session
-   │      "media_port":6997,"stream":{...}}              │
+   │      "media_port":6997,"stream":{...}}              │  (stream.encryption
+   │                                                    │   names the salt)
    │                                                    │
    │──── UDP "AUSHA/1 <session>" → :6997 ───────────────▶│  learn address
    │◀─── {"t":"ready"} ─────────────────────────────────│
@@ -246,6 +249,7 @@ pipeline.fill(&mut output, now_us);            // audio thread
 
 ```
 datagram
+   │  crypto::Opener         only with --encrypt; in ausha-client, not here
    │  rtp::parse             version, CSRC, extension, padding
    ↓
 jitter::JitterBuffer         reorder by extended sequence, adaptive depth
@@ -262,12 +266,21 @@ resample::Resampler          Catmull-Rom, ratio from the drift controller
 ready queue ──▶ output buffer
 ```
 
+Decryption is the one step that happens outside the pipeline: it belongs to the
+transport, and doing it in `ausha-client`'s receive thread means the pipeline
+only ever sees plaintext RTP, whatever the transport did. `ausha-core` still
+owns the cipher, in `crypto`, so both ends share one implementation.
+
 ### Sequence numbers
 
 RTP sequence numbers are 16 bits and wrap every 65536 packets, about every 22
 minutes at 50 packets per second. `rtp::SequenceExtender` lifts them into a
 monotonic 64-bit space, handling the case where a packet reordered *across* the
 wrap must not be treated as 65535 packets in the future.
+
+It splits that into `peek` and `commit` so that a caller which can still reject
+a packet extends the sequence number before deciding to trust it — which is
+what keeps a forged packet from moving the encryption rollover counter.
 
 ### What the jitter buffer decides
 
@@ -366,7 +379,8 @@ already knows nothing about how audio reaches a speaker.
 
 ```
 PlaybackService (foreground)
-   ├─ WifiLock, wake lock, audio focus, network callback
+   ├─ WifiLock, wake lock, audio focus, default-network callback
+   ├─ Transport → MediaSession: headset keys, lock screen, media panel
    └─ AudioEngine  ── thread "ausha-audio" ──┐
                                             ↓
                               Native.nativeFill(handle, FloatArray)
@@ -401,11 +415,34 @@ more than it saves.
 - **Audio focus** pauses for calls instead of talking over them.
 - **Network changes** — roaming or dropping to mobile data changes the local
   address and strands the UDP socket silently, so a `NetworkCallback` triggers
-  a reconnect.
+  a reconnect. It watches the *default* network: a phone holding both WiFi and
+  mobile data raises `onLost` for whichever it drops, and reconnecting on that
+  cut playback on a device that had lost nothing.
+- **A media button starts the service.** `MediaButtonReceiver` starts it as a
+  foreground service to deliver a headset press, so it must call
+  `startForeground` even when there is nothing to resume.
 - **Multicast lock** — without it the radio filters the multicast mDNS rides on
   and discovery silently returns nothing.
 - **Bluetooth adds 100–200 ms** the app cannot control. Wired output is the
   only way to hit the latency figures above.
+
+### Transport controls
+
+`Transport` owns a `MediaSessionCompat`; the notification is a `MediaStyle`
+notification pointing at it, and both the headset button and the system media
+panel reach playback through its callbacks rather than through the service's
+own actions.
+
+A live stream has no seek, no skip and no duration, so the session offers only
+play, pause and stop, and reports `PLAYBACK_POSITION_UNKNOWN` rather than a
+position the system would draw as a progress bar that never moves. Pause means
+leaving the sender — there is no backlog to resume from — so play reconnects.
+Pausing releases audio focus and the WiFi and wake locks, and a deliberate
+pause is remembered so that regaining focus or a network does not restart a
+stream the listener stopped on purpose.
+
+Unplugging headphones (`ACTION_AUDIO_BECOMING_NOISY`) pauses rather than
+playing out loud.
 
 ### Discovery and pairing
 
@@ -429,6 +466,18 @@ sending machine and useless to a phone.
 `capture/source.rs` asks PulseAudio for the default sink and appends
 `.monitor`, which is the canonical way to capture what the desktop is playing.
 If that fails it falls back to the first source whose name ends in `.monitor`.
+
+On Windows there is no equivalent — Windows has no monitor source and ffmpeg
+has no WASAPI loopback demuxer — so `capture/dshow.rs` reads ffmpeg's
+DirectShow device list and picks a loopback device from it, preferring the
+`virtual-audio-capturer` filter (which works on any card) over a card's own
+Stereo Mix (which only exists if the driver exposes it). Two listing layouts
+are in the wild, one grouping devices under a heading and one tagging each line
+`(audio)`; both are parsed, and that parsing is tested on Linux because it is
+the same text whatever host produced it.
+
+`--capture <device>` overrides detection on either platform, for a sound setup
+only the user knows the shape of.
 
 The generated ffmpeg command:
 
@@ -474,11 +523,17 @@ Two mechanisms, because either alone leaves a gap:
 
 - `Encoder` implements `Drop`, killing and reaping the child on any normal
   return or panic.
-- The child sets `PR_SET_PDEATHSIG` to `SIGKILL` before `exec`, so the kernel
-  kills it even when the sender dies from a signal it cannot handle.
+- The kernel is asked to kill the child when the sender dies, so it goes even
+  when the sender dies from something it cannot handle. On Linux the child sets
+  `PR_SET_PDEATHSIG` to `SIGKILL` before `exec`; Windows has no equivalent, so
+  the child is put in a job object with `KILL_ON_JOB_CLOSE` after spawn, which
+  the kernel empties when the last handle to it closes.
 
 Without the second, `kill <sender-pid>` left ffmpeg running and holding the
 capture device — observed in testing.
+
+`capture/lifetime.rs` holds both, behind one `Guard` the encoder owns for as
+long as it owns the child.
 
 ---
 
@@ -489,9 +544,51 @@ The pairing token is a 48-bit random value, displayed grouped as
 must present it in `hello`. Comparison is constant-time with respect to how
 many leading characters match.
 
-**The media stream itself is not yet encrypted.** Anyone on the network who can
-capture packets can decode the audio. `plan.md` §2.6 covers adding
-ChaCha20-Poly1305 to the RTP payload. Treat a LAN as untrusted until then.
+### Media encryption
+
+`--encrypt` wraps the RTP payload in ChaCha20-Poly1305. It is off by default,
+because turning it on is what stops `ffplay` and the SDP debug path working.
+
+```
+[ RTP header, 12 bytes, clear ][ ciphertext ][ Poly1305 tag, 16 bytes ]
+   authenticated as AAD          everything past the header
+```
+
+The header stays clear the way SRTP leaves it clear: a capture still shows
+sequence numbers, timestamps and SSRC, so loss and jitter stay diagnosable in
+Wireshark, while the audio does not leave the machine in the clear. It is
+authenticated as associated data, so the sequence number a packet claims cannot
+be changed.
+
+The key is PBKDF2-HMAC-SHA256 at 200k rounds over the pairing token, salted
+with 16 random bytes the sender generates per run and names in `accept`. Two
+things drive that:
+
+- **The salt is per run**, so a pinned `--token` still yields a different key
+  every time the sender starts.
+- **The rounds are not decoration.** A 48-bit token derived cheaply is a few
+  GPU-hours to brute force against a captured stream. At 200k rounds that is
+  out of reach, and it costs one handshake a couple of hundred milliseconds.
+
+The nonce is the SSRC and the *extended* sequence number, which never repeat
+within a session. The 16-bit sequence alone would not do: it wraps every 22
+minutes at 50 packets per second, and a repeated nonce under one key is the one
+failure ChaCha20-Poly1305 does not survive. The receiver's rollover counter
+only advances on a packet that authenticates, so a forged sequence number
+cannot walk it away from the sender's.
+
+A packet that fails to authenticate is dropped without a word: to the jitter
+buffer that is indistinguishable from a packet that never arrived, which it is
+already equipped to conceal.
+
+**What this does not cover.** The sender is not authenticated — the token
+proves the receiver to the sender, not the reverse — so an active attacker in
+the path can still impersonate a sender, and `accept` is where they would strip
+the `encryption` field to force plaintext. This closes the passive
+eavesdropper, which is the realistic threat on a shared network.
+
+`--compat-ts` is never encrypted; it exists so that players with no pairing
+step can receive the stream, and it skips the token as well.
 
 ---
 
@@ -525,17 +622,35 @@ Useful flags: `--sink null` to run headless, `--run-for <seconds>` to bound a
 soak, and `--simulate-loss <pct>` to drop received packets and exercise
 concealment against a real sender.
 
+### Soaking several receivers at once
+
+```bash
+./scripts/soak.sh -n 8 -d 240 -l 3 -e
+```
+
+Starts a sender and N receivers against it, then fails if any of them saw an
+underrun or a silent frame — the two things a listener actually hears. Loss on
+its own is not a failure; absorbing it is the receiver's job. The script also
+prints the spread in packet counts across receivers, which is how a fan-out
+that served one receiver better than another would show up.
+
+This is the one test that needs a network. The core's own tests inject loss,
+reordering and jitter headlessly; what they cannot exercise is one encoder, one
+fan-out and one registry serving several sessions at once over a real socket.
+
 ---
 
 ## 11. Known limitations
 
-- **Windows capture is unimplemented.** `capture/source.rs` returns an error.
-  ffmpeg has no WASAPI loopback demuxer, so this needs a DirectShow loopback
-  device such as virtual-audio-capturer. Tracked as Phase 4.
-- **No discovery.** Receivers need the sender's IP. mDNS is Phase 3.
+- **The Windows sender is untested.** The code is there and type-checks for
+  `x86_64-pc-windows-*`, but it has never been run on Windows: no machine to
+  run it on. It also needs a loopback device the user installs or enables
+  themselves, because Windows ships none.
 - **`--compat-ts` is unauthenticated.** It skips the handshake entirely, so it
-  skips pairing. Use it only on a trusted network.
-- **No encryption** on the media path. See §6.
+  skips pairing, and `--encrypt` does not apply to it. Use it only on a trusted
+  network.
+- **Encryption is opt-in and one-directional.** See §9: `--encrypt` closes the
+  passive eavesdropper, not an active attacker in the path.
 - **No RTCP.** Receiver reports would give the sender real loss and jitter
   figures; today it learns them only from the control channel `stats` message,
   which nothing sends yet.
@@ -543,8 +658,6 @@ concealment against a real sender.
   the split between sender and receiver and is worth renaming.
 - **No iOS app.** `ausha-core` and `ausha-client` are ready for it; only the
   audio sink and a Swift bridge remain.
-- **No MediaSession**, so headset buttons and lock-screen transport controls do
-  nothing. The notification carries a Stop action.
 - **The clock offset is estimated but unused.** `Session::offset_us` tracks it
   from the ping timestamps; A/V sync with desktop video would consume it.
 - **No cpal backend.** The sink shells out to `pacat`/`aplay`/`ffplay` rather

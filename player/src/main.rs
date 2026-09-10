@@ -14,7 +14,8 @@ use std::sync::Arc;
 use std::thread;
 use std::time::Duration;
 
-use ausha_core::protocol::StreamParams;
+use ausha_core::crypto::{self, Sealer};
+use ausha_core::protocol::{Encryption, StreamParams};
 use registry::Registry;
 
 fn main() {
@@ -35,7 +36,17 @@ fn main() {
 fn run(cli: cli::Cli) -> io::Result<()> {
     let token = cli.token.clone().unwrap_or_else(ids::random_token);
     let ssrc = ids::random_ssrc();
-    let stream = StreamParams::new(ssrc);
+    let mut stream = StreamParams::new(ssrc);
+    if cli.encrypt {
+        stream.encryption = Some(Encryption {
+            cipher: crypto::CIPHER.to_string(),
+            salt: ids::random_salt(),
+        });
+    }
+    let mut sealer = stream
+        .key(&token)
+        .map_err(io::Error::other)?
+        .map(|key| Sealer::new(&key));
     let registry = Arc::new(Registry::new());
 
     let media = Arc::new(UdpSocket::bind((Ipv4Addr::UNSPECIFIED, cli.media_port))?);
@@ -48,6 +59,9 @@ fn run(cli: cli::Cli) -> io::Result<()> {
         if let Some(path) = &cli.sdp_out {
             std::fs::write(path, sdp::describe(target, &stream, cli.bitrate_kbps))?;
             println!("media: wrote {} for ffplay", path.display());
+            if cli.encrypt {
+                eprintln!("media: warning: ffplay cannot play an encrypted stream");
+            }
         }
     }
 
@@ -68,6 +82,7 @@ fn run(cli: cli::Cli) -> io::Result<()> {
     let compat_ingest = start_compat(&cli.compat_ts)?;
 
     let mut ffmpeg = capture::spawn(&capture::Settings {
+        device: cli.capture.clone(),
         bitrate_kbps: cli.bitrate_kbps,
         ssrc,
         ingest: ingest.local_addr()?,
@@ -84,7 +99,7 @@ fn run(cli: cli::Cli) -> io::Result<()> {
     };
 
     announce(&cli, &token, ssrc);
-    pump(&ingest, &media, &registry, &mut ffmpeg)
+    pump(&ingest, &media, &registry, &mut ffmpeg, sealer.as_mut())
 }
 
 fn pump(
@@ -92,9 +107,10 @@ fn pump(
     media: &UdpSocket,
     registry: &Registry,
     encoder: &mut capture::Encoder,
+    mut sealer: Option<&mut Sealer>,
 ) -> io::Result<()> {
     loop {
-        relay::forward(ingest, media, registry)?;
+        relay::forward(ingest, media, registry, sealer.as_deref_mut())?;
         if let Some(status) = encoder.exit_status()? {
             return Err(io::Error::other(format!("ffmpeg exited: {status}")));
         }
@@ -140,7 +156,15 @@ fn bind_ingest_pair() -> io::Result<(UdpSocket, UdpSocket)> {
 
 fn announce(cli: &cli::Cli, token: &str, ssrc: u32) {
     println!("control: tcp/{}", cli.control_port);
-    println!("media:   udp/{} ssrc {ssrc:08x}", cli.media_port);
+    println!(
+        "media:   udp/{} ssrc {ssrc:08x}{}",
+        cli.media_port,
+        if cli.encrypt {
+            format!(", encrypted with {}", crypto::CIPHER)
+        } else {
+            String::new()
+        }
+    );
     println!("pairing: {}", ids::format_token(token));
 
     let Some(address) = advertise::best_local_address() else {

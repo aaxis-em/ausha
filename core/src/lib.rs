@@ -5,6 +5,7 @@
 //! timestamps come in as arguments, audio goes out into a caller-owned buffer.
 
 pub mod config;
+pub mod crypto;
 pub mod decode;
 pub mod drift;
 pub mod jitter;
