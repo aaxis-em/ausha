@@ -5,303 +5,131 @@
 <h1 align="center">Ausha</h1>
 
 <p align="center">
-  A real-time audio transportation mechanism — streams desktop audio to
-  receivers on the local network as Opus over RTP.
+  Play your computer's sound on your phone — and use your phone as the
+  computer's microphone.
 </p>
 
 <p align="center">
   <a href="https://aaxis-em.github.io/ausha/">Website</a>
 </p>
 
-- `arch.md` — how it works
-- `plan.md` — roadmap, including the mobile receiver design
-- `CLAUDE.md` — code style rules
-- `index.html` — the project page. Serve it by setting GitHub Pages to deploy
-  from `main`, folder `/ (root)`.
+---
 
-## Status
+## Two things it does
 
-The sender captures desktop audio, encodes Opus in 20 ms frames, and fans the
-RTP stream out to every paired receiver. The desktop receiver plays it back
-with a jitter buffer, FEC recovery, loss concealment and clock-drift
-correction. The Android app does the same on a phone, with mDNS discovery, QR
-pairing and lock-screen controls. The media path can be encrypted with
-ChaCha20-Poly1305 keyed by the pairing token. iOS is not built yet; it will
-reuse the same Rust crates.
+**Listen.** Whatever your computer is playing — music, a video, a call — comes
+out of your phone, or another computer, on the same WiFi.
 
-## Layout
+**Call mode.** Your phone's microphone goes back the other way, so the phone
+becomes a wireless headset for a call you take on the computer.
 
-| Crate | Binary | What it is |
-|---|---|---|
-| `core/` | — | `ausha-core`: protocol and receive pipeline, no I/O |
-| `player/` | `ausha` | The sender |
-| `client/` | — | `ausha-client`: sockets, session and threads, no audio device |
-| `mobile/` | — | `ausha-mobile`: the JNI bridge, built as a `.so` |
-| `receiver/` | `ausha-recv` | The desktop receiver |
-| `android/` | — | The Android app |
+## How it works
 
-## Requirements
-
-ffmpeg built with `libopus`, plus a loopback audio device.
-
-| Platform | Capture | State |
-|---|---|---|
-| Linux | PulseAudio monitor source | working |
-| Windows | DirectShow loopback device | written, never run on Windows |
-
-Windows ships no loopback device, so install
-[virtual-audio-capturer](https://github.com/rdp/screen-capture-recorder-to-video-windows-free)
-or enable *Stereo Mix* under Sound settings → Recording. The sender finds
-either on its own; `--capture "<device name>"` names one by hand.
-
-The receiver additionally needs one of `pacat`, `aplay` or `ffplay` for output.
-
-```bash
-cargo build --release
 ```
+       your computer                              your phone
+   ┌──────────────────┐                      ┌──────────────────┐
+   │  music, video,   │ ─────  sound  ─────▶ │     speaker      │
+   │    your call     │                      │                  │
+   │                  │ ◀──  your voice  ─── │    microphone    │
+   └──────────────────┘      (call mode)     └──────────────────┘
+                            same WiFi
+```
+
+The computer captures what it is already playing and sends it to the phone. In
+call mode the phone sends its microphone back, and the computer offers that to
+your call app as an input device named **ausha**.
 
 ---
 
-# How to use
+# How to use it
 
-## Start the sender
+## 1. Start it on the computer
+
+To listen only:
 
 ```bash
 cargo run --release --bin ausha
 ```
 
-It finds the default sink's monitor source and prints what receivers need:
-
-```
-capture: pulse source alsa_output.pci-0000_00_1f.3-....monitor
-control: tcp/6996
-media:   udp/6997 ssrc 1b60ad3b
-pairing: xxxx-xxxx-xxxx
-```
-
-> **The pairing token is different every time the sender starts.** Copy the one
-> your own sender just printed — a token from an earlier run, or from these
-> examples, will be rejected. Pass `--token <token>` to pin it so you are not
-> re-entering it each time:
->
-> ```bash
-> cargo run --release --bin ausha -- --token <token>
-> ```
-
-Find the address receivers should connect to with:
+For calls as well:
 
 ```bash
-ip -4 addr show scope global | grep -oP 'inet \K[\d.]+'
+cargo run --release --bin ausha -- --uplink
+```
+
+It prints a pairing code and a QR code. Leave it running.
+
+> Needs Linux and ffmpeg built with `libopus`. The Windows sender is written
+> but has never been run.
+
+## 2. Put the app on your phone
+
+1. Open the `android/` folder in Android Studio.
+2. On the phone, turn on **USB debugging**, and plug it into the computer.
+3. Press **Run**.
+
+## 3. Connect
+
+Tap **Scan QR** in the app and point it at the code on your screen. Sound
+starts straight away.
+
+**For calls**, also turn on **Call mode** in the app, then pick **ausha** as
+the microphone in Zoom, Discord, Meet — whatever you are calling from.
+
+> **Use headphones on the phone for calls.** Speakerphone echo cancellation
+> has not been confirmed on real hardware yet, so without headphones the
+> person you are talking to may hear themselves.
+
+## Or listen on another computer
+
+No app needed. Use the address and code the sender printed:
+
+```bash
+cargo run --release --bin ausha-recv -- --host <ip> --token <code>
 ```
 
 ---
 
-## Play it on another computer
+## Options
 
-This is the full pipeline — jitter buffer, FEC, drift correction.
+On the computer, `ausha`:
 
-```bash
-cargo run --release --bin ausha-recv -- --host <sender-ip> --token <token>
-```
-
-Substitute the address you found above and the `pairing:` line from your own
-sender. The token may be typed with or without the dashes, in upper or lower
-case — all four forms are accepted.
-
-It prints a line every five seconds:
-
-```
-    5s  depth  80/ 80 ms  latency  81 ms  jitter   2.5 ms  loss  0.00%  \
-        fec 0  plc 0  underruns 0  rate 1.0000
-```
-
-| Field | Meaning |
+| Flag | What it does |
 |---|---|
-| `depth a/b` | Undecoded audio buffered, against the target it is aiming for |
-| `latency` | Total buffered audio, the delay this receiver is adding |
-| `jitter` | How irregularly packets are arriving |
-| `loss` | Packets that never arrived |
-| `fec` / `plc` | Lost frames rebuilt from redundancy, and ones papered over |
-| `underruns` | Times the buffer ran dry. Should stay at zero |
-| `rate` | Resampling ratio correcting clock drift. Sits near 1.0000 |
+| `--uplink` | Also take the phone's microphone. Needed for call mode |
+| `--encrypt` | Encrypt the audio |
+| `--token <code>` | Reuse a pairing code instead of a new one each start |
+| `--bitrate <kbps>` | Audio quality. Default 128 |
+| `--no-qr` | Do not print the QR code |
+| `--help` | Everything else |
 
-If `loss` is high but `underruns` stays at zero, it is working — the target
-depth will grow on its own to absorb the bursts.
+On another computer, `ausha-recv`:
 
-### Receiver options
-
-```
---host <ip>             Sender address (required)
---token <token>         Pairing token the sender printed (required)
---control-port <port>   Sender control port (default 6996)
---name <name>           Name shown on the sender (default this host)
---sink <program>        pacat, aplay, ffplay, or null (default: first found)
---sink-latency <ms>     Requested device latency (default 20)
---run-for <seconds>     Exit after this long, for soak testing
---latency <preset>      low, balanced or stable (default balanced)
---simulate-loss <pct>   Drop this share of received packets, to exercise
-                        concealment against a real sender
-```
-
----
-
-## Play it on Android
-
-Build and install the app:
-
-```bash
-cd android
-./gradlew installDebug
-```
-
-It needs the Android SDK and NDK; Gradle compiles the Rust core for each ABI
-on the way, so the native library can never be stale. Set `ANDROID_NDK_HOME`
-if yours is not at `~/Android/Sdk/ndk/28.2.13676358`, and pass
-`-Pausha.abis=arm64-v8a` to build for phones only.
-
-Pair the phone in whichever way suits:
-
-- **Scan** — run `ausha --qr` and scan the code with the app's *Scan QR* button.
-- **Tap a link** — the same `ausha://host:port?token=…` opens the app directly.
-- **Pick from the list** — the app lists senders it finds over mDNS; tap one
-  and type the token.
-- **Type it** — address, port and token by hand.
-
-The **Latency** control chooses how much the buffer holds: *Low* for the least
-delay on a quiet network, *Balanced* for ordinary WiFi, *Stable* when the
-signal is weak. The stats below show what playback is actually doing.
-
-Playback continues with the screen off, holds a low-latency WiFi lock so the
-radio does not park between beacons, and pauses for calls.
-
-Headset buttons, the lock screen and the system media panel control it through
-a MediaSession: play, pause and stop. Unplugging headphones pauses rather than
-playing out loud. Pause leaves the sender — a live stream has no backlog to
-resume from — so play reconnects.
-
-## Play it on Android without the app
-
-mpv or VLC can receive a plain MPEG-TS stream with nothing to install and no
-SDP file to copy across.
-
-Find the phone's IP (Settings → About → Status), then:
-
-```bash
-cargo run --release --bin ausha -- --compat-ts <phone-ip>:1234
-```
-
-In mpv on the phone, open:
-
-```
-udp://0.0.0.0:1234
-```
-
-Repeat `--compat-ts` for more devices; they share a single encode.
-
-Two things to know before using this on a network you do not control:
-
-- **It skips the pairing token.** Anyone who can reach that address gets your
-  desktop audio.
-- **MPEG-TS has no loss recovery.** The Opus FEC that carries the real receiver
-  through bad WiFi does nothing here, so expect glitches where `ausha-recv`
-  would have none.
-
----
-
-## Check it works, on one machine
-
-```bash
-cargo run --release --bin ausha -- --static-client 127.0.0.1:5555 --sdp-out /tmp/ausha.sdp
-ffplay -protocol_whitelist file,rtp,udp -i /tmp/ausha.sdp
-```
-
-`--static-client` pushes to a fixed address with no handshake, and `--sdp-out`
-writes the session description ffplay needs.
-
-### Sender options
-
-```
---control-port <port>   TCP control channel port (default 6996)
---media-port <port>     UDP media port receivers punch and listen on (default 6997)
---bitrate <kbps>        Opus bitrate (default 128)
---token <token>         Fixed pairing token instead of a freshly generated one
---static-client <addr>  Always send media to this ip:port, no handshake required
---sdp-out <path>        Write an SDP for --static-client, playable with ffplay
---compat-ts <ip:port>   Also push MPEG-TS to this address for mpv or VLC (repeatable)
---capture <device>      Capture this device instead of the detected one
---encrypt               Encrypt the media payload with ChaCha20-Poly1305
---name <name>           Name advertised to receivers (default this host)
---no-discovery          Do not advertise over mDNS
---qr                    Print a QR code of the pairing link
-```
-
----
-
-## Encrypt the stream
-
-Desktop audio can be a private call, and a LAN is not a security boundary —
-a coffee shop's WiFi is a LAN. `--encrypt` wraps the audio in
-ChaCha20-Poly1305, keyed by the pairing token both ends already share:
-
-```bash
-cargo run --release --bin ausha -- --encrypt
-```
-
-Receivers need no flag; the sender names the cipher during pairing and they
-follow. The RTP header stays readable so Wireshark can still show you loss and
-jitter, but the audio does not leave the machine in the clear.
-
-It is off by default because it is what stops the `ffplay` path above working —
-turn it on for real listening, leave it off while debugging the stream. It does
-not apply to `--compat-ts`, which skips pairing entirely.
-
----
-
-## Soak it
-
-```bash
-./scripts/soak.sh -n 8 -d 240 -l 3 -e
-```
-
-Runs eight receivers against one sender for four minutes with 3% of each
-receiver's packets dropped and the stream encrypted, then fails if any of them
-underran or played silence. `-h` lists the options.
-
-Loss on its own is not a failure — absorbing it is the receiver's whole job.
-Underruns and silent frames are, because those are what a listener hears.
-
----
-
-## When it does not connect
-
-Both of these look identical from the receiver — a handshake that times out —
-and neither shows up when testing on one machine.
-
-- **Firewall.** The sender needs inbound **TCP 6996** and **UDP 6997**:
-  ```bash
-  sudo ufw allow 6996/tcp && sudo ufw allow 6997/udp
-  ```
-- **Client isolation.** Many routers, and nearly all guest networks, block
-  device-to-device traffic. If the sender answers `ping` but the handshake
-  still times out, this is why. Use a different network.
-
-Other symptoms:
-
-| Symptom | Cause |
+| Flag | What it does |
 |---|---|
-| `No PulseAudio monitor source found` | PulseAudio is not running |
-| `rejected: invalid pairing token` | Token is from an earlier run. It changes every start — use the `pairing:` line the running sender printed, or pin it with `--token` |
-| `no UDP punch received` | UDP 6997 is blocked while TCP 6996 got through |
-| App lists no senders | mDNS is blocked on many routers. Scan the QR code or type the address |
-| Audio glitches, `underruns` climbing | Genuinely bad link; try `--bitrate 96` |
+| `--host <ip>` and `--token <code>` | Required. Both are on the sender's screen |
+| `--latency low`, `balanced` or `stable` | Less delay, or more resilience on bad WiFi |
+| `--help` | Everything else |
 
 ---
 
-## Tests
+## If it does not connect
 
-```bash
-cargo test
-```
+| What you see | What it is |
+|---|---|
+| It just times out | The firewall. Allow TCP 6996 and UDP 6997 |
+| It times out, but `ping` works | Your WiFi blocks device-to-device traffic. Common on guest networks — use another one |
+| `invalid pairing token` | The code changes every time the sender starts. Use the one on screen now, or pin it with `--token` |
+| No senders listed in the app | Your router blocks mDNS. Scan the QR code instead |
+| Crackling, or `underruns` counting up | The link is genuinely struggling. Try `--bitrate 96`, or `--latency stable` on the receiver |
+| Call mode says no microphone | The sender was started without `--uplink` |
 
-The core suite runs the pipeline against real libopus with injected loss,
-reordering and jitter bursts, and simulates hours of clock drift.
+---
+
+## More
+
+- **[arch.md](arch.md)** — how it is built, and how to run it the awkward ways:
+  playing the stream in `ffplay` or mpv, encrypting it, soaking several
+  receivers at once.
+- **[plan.md](plan.md)** — what is done and what is next.
+- Tests: `cargo test`.

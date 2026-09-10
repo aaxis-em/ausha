@@ -4,10 +4,10 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Ausha</title>
-<meta name="description" content="Ausha streams your desktop's audio to laptops and phones on the local network as Opus over RTP, with a jitter buffer, FEC and clock-drift correction.">
+<meta name="description" content="Play your computer's sound on your phone over your own WiFi, and use the phone as the computer's microphone for calls.">
 <link rel="icon" href="assets/ausha.svg" type="image/svg+xml">
 <meta property="og:title" content="Ausha">
-<meta property="og:description" content="Real-time desktop audio to every speaker on your network.">
+<meta property="og:description" content="Your computer's sound on your phone — and your phone as the computer's microphone.">
 <meta property="og:image" content="assets/ausha-icon.png">
 <meta property="og:type" content="website">
 <link rel="preconnect" href="https://fonts.googleapis.com">
@@ -153,7 +153,7 @@ h1, h2, h3 { color: var(--paper); text-wrap: balance; margin: 0; }
   line-height: 0.92;
   letter-spacing: -0.025em;
   margin: 18px 0 0;
-  max-width: 14ch;
+  max-width: 17ch;
 }
 .hero p.lede {
   font-size: 1.2rem;
@@ -406,29 +406,29 @@ footer nav a:hover { color: var(--paper); }
 
   <div class="wrap">
     <p class="eyebrow">Local network audio</p>
-    <h1>Whatever your desktop is playing, on every speaker in the house.</h1>
+    <h1>Your computer's sound, on your phone.</h1>
     <p class="lede">
-      Ausha captures the audio leaving your computer and streams it to laptops
-      and phones on the same WiFi, as Opus over RTP — with the jitter buffer,
-      loss recovery and clock-drift correction that make it hold up on a real
-      network.
+      Play whatever your computer is playing through your phone on the same
+      WiFi. Turn on call mode and it goes both ways — the phone becomes the
+      computer's microphone, so you can take a call on the computer from
+      across the room.
     </p>
     <div class="spec">
-      <span>Opus 48 kHz stereo</span>
-      <span>20 ms frames</span>
-      <span>in-band FEC</span>
+      <span>music and video</span>
+      <span>two-way for calls</span>
+      <span>local network only</span>
       <span>Linux sender</span>
-      <span>Android &amp; desktop receivers</span>
+      <span>Android &amp; desktop listeners</span>
     </div>
 
     <div class="pair">
       <div class="term">
-        <header><span>on the desktop</span><span>sender</span></header>
+        <header><span>on the computer</span><span>listen</span></header>
         <pre><span class="cue">$ </span>cargo run --release --bin ausha</pre>
       </div>
       <div class="term">
-        <header><span>on the listener</span><span>receiver</span></header>
-        <pre><span class="cue">$ </span>ausha-recv --host <span class="dim">&lt;ip&gt;</span> --token <span class="dim">&lt;token&gt;</span></pre>
+        <header><span>on the computer</span><span>calls too</span></header>
+        <pre><span class="cue">$ </span>cargo run --release --bin ausha -- --uplink</pre>
       </div>
     </div>
   </div>
@@ -437,333 +437,187 @@ footer nav a:hover { color: var(--paper); }
 <section id="what">
   <div class="wrap">
     <p class="eyebrow">What it is</p>
-    <h2>One capture, many listeners.</h2>
-    <p class="section-intro">
-      Ausha reads your desktop's loopback device — the same audio your speakers
-      get — encodes it once, and fans the result out to every receiver that has
-      paired with it. Receivers come and go without disturbing the stream, and
-      they all share a single encode.
-    </p>
+    <h2>Two things it does.</h2>
+
+    <div class="prose-cols" style="margin-top: 26px;">
+      <div>
+        <h3>Listen</h3>
+        <p>
+          Whatever your computer is playing — music, a video, a call — comes
+          out of your phone, or another computer, on the same WiFi.
+        </p>
+      </div>
+      <div>
+        <h3>Call mode</h3>
+        <p>
+          Your phone's microphone goes back the other way, so the phone becomes
+          a wireless headset for a call you take on the computer.
+        </p>
+      </div>
+    </div>
 
     <div class="diagram">
-      <svg viewBox="0 0 880 232" role="img" aria-label="Desktop audio is encoded to Opus, packetised into RTP over UDP port 6997, and sent to a laptop and a phone; a TCP control channel on port 6996 runs back the other way.">
+      <svg viewBox="0 0 880 210" role="img" aria-label="Sound travels from your computer to your phone. In call mode your voice travels from the phone's microphone back to the computer. Both over the same WiFi.">
         <defs>
           <marker id="tip" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
             <path d="M0 0 L10 5 L0 10 z" fill="#948a8d"/>
           </marker>
         </defs>
 
-        <g fill="none" stroke="#948a8d" stroke-width="1.4">
-          <line x1="170" y1="70" x2="216" y2="70" marker-end="url(#tip)"/>
-          <line x1="386" y1="70" x2="432" y2="70" marker-end="url(#tip)"/>
-          <line x1="602" y1="70" x2="640" y2="70"/>
-          <path d="M640 70 L640 38 L654 38" marker-end="url(#tip)"/>
-          <path d="M640 70 L640 114 L654 114" marker-end="url(#tip)"/>
-        </g>
-
         <g stroke="#272530" stroke-width="1" fill="#121116">
-          <rect x="8" y="40" width="162" height="60" rx="9"/>
-          <rect x="224" y="40" width="162" height="60" rx="9"/>
-          <rect x="440" y="40" width="162" height="60" rx="9"/>
-          <rect x="656" y="12" width="162" height="52" rx="9"/>
-          <rect x="656" y="88" width="162" height="52" rx="9"/>
+          <rect x="8" y="40" width="250" height="94" rx="10"/>
+          <rect x="622" y="40" width="250" height="94" rx="10"/>
         </g>
-
-        <g font-family="Archivo, sans-serif" font-size="15" font-weight="500" fill="#fff5f5">
-          <text x="26" y="68">Desktop audio</text>
-          <text x="242" y="68">Opus encode</text>
-          <text x="458" y="68">RTP packets</text>
-          <text x="674" y="35">Laptop</text>
-          <text x="674" y="111">Phone</text>
+        <g font-family="Archivo, sans-serif" font-size="16" font-weight="500" fill="#fff5f5">
+          <text x="30" y="78">Your computer</text>
+          <text x="644" y="78">Your phone</text>
         </g>
         <g font-family="JetBrains Mono, monospace" font-size="11.5" fill="#948a8d">
-          <text x="26" y="88">loopback monitor</text>
-          <text x="242" y="88">20 ms · 128 kbps</text>
-          <text x="458" y="88">udp 6997</text>
-          <text x="674" y="52">ausha-recv</text>
-          <text x="674" y="128">Android app</text>
+          <text x="30" y="102">music, video,</text>
+          <text x="30" y="120">your call</text>
+          <text x="644" y="102">speaker</text>
+          <text x="644" y="120">and microphone</text>
         </g>
 
-        <path d="M737 140 L737 186 L89 186 L89 100" fill="none" stroke="#272530" stroke-width="1.4"
-              stroke-dasharray="4 5" marker-end="url(#tip)"/>
-        <text x="380" y="209" font-family="JetBrains Mono, monospace" font-size="11.5" fill="#948a8d">
-          control · tcp 6996 · pairing, keepalive, stream parameters
-        </text>
+        <g fill="none" stroke="#948a8d" stroke-width="1.4">
+          <line x1="272" y1="66" x2="608" y2="66" marker-end="url(#tip)"/>
+          <line x1="608" y1="112" x2="272" y2="112" marker-end="url(#tip)"/>
+        </g>
+        <g font-family="Archivo, sans-serif" font-size="14" fill="#fff5f5" text-anchor="middle">
+          <text x="440" y="58">sound</text>
+          <text x="440" y="134">your voice</text>
+        </g>
+        <g font-family="JetBrains Mono, monospace" font-size="11.5" fill="#948a8d" text-anchor="middle">
+          <text x="440" y="150">call mode only</text>
+          <text x="440" y="186">same WiFi</text>
+        </g>
       </svg>
     </div>
 
-    <div class="prose-cols">
-      <div>
-        <h3>A datagram is one frame of audio</h3>
-        <p>
-          Each UDP packet carries exactly one 20 ms Opus frame with an RTP
-          header, so a lost packet costs one frame and nothing else. That is
-          what makes the rest of the recovery possible.
-        </p>
-      </div>
-      <div>
-        <h3>Losses get rebuilt, not papered over</h3>
-        <p>
-          Opus carries a low-bitrate copy of the previous frame inside each
-          packet. An isolated loss — the common case on WiFi — is reconstructed
-          from it rather than concealed.
-        </p>
-      </div>
-      <div>
-        <h3>The buffer sizes itself</h3>
-        <p>
-          The jitter buffer grows to absorb whatever bursts your network
-          actually produces, so you are not guessing at a latency setting that
-          will be wrong an hour later.
-        </p>
-      </div>
-      <div>
-        <h3>Clocks drift; this corrects for it</h3>
-        <p>
-          Your phone's converter does not run at exactly the sender's rate. A
-          slow resampler nudges the ratio by fractions of a percent so the
-          buffer neither empties nor grows over hours.
-        </p>
-      </div>
-    </div>
+    <p class="section-intro">
+      The computer captures what it is already playing and sends it to the
+      phone. In call mode the phone sends its microphone back, and the computer
+      offers that to your call app as an input device named <code>ausha</code>.
+    </p>
   </div>
 </section>
 
 <section id="use">
   <div class="wrap">
     <p class="eyebrow">How to use it</p>
-    <h2>Build it, start it, pair a listener.</h2>
-    <p class="section-intro">
-      The sender runs on Linux and needs ffmpeg built with <code>libopus</code>
-      plus a loopback audio device. Receivers need nothing but the binary.
-    </p>
+    <h2>Three steps.</h2>
 
     <div class="steps">
       <div class="step">
         <span class="n">01</span>
-        <h3>Build the workspace</h3>
+        <h3>Start it on the computer</h3>
         <div class="detail">
-          <p>One command builds the sender, the desktop receiver and the shared core.</p>
+          <p>To listen only:</p>
           <div class="term">
-            <header><span>terminal</span><span>once</span></header>
-<pre><span class="cue">$ </span>git clone https://github.com/aaxis-em/ausha
-<span class="cue">$ </span>cd ausha
-<span class="cue">$ </span>cargo build --release</pre>
+            <header><span>computer</span><span>listen</span></header>
+<pre><span class="cue">$ </span>cargo run --release --bin ausha</pre>
           </div>
+          <p>For calls as well:</p>
+          <div class="term">
+            <header><span>computer</span><span>calls too</span></header>
+<pre><span class="cue">$ </span>cargo run --release --bin ausha -- --uplink</pre>
+          </div>
+          <p>
+            It prints a pairing code and a QR code. Leave it running. You need
+            Linux and ffmpeg built with <code>libopus</code>.
+          </p>
         </div>
       </div>
 
       <div class="step">
         <span class="n">02</span>
-        <h3>Start the sender</h3>
+        <h3>Put the app on your phone</h3>
         <div class="detail">
           <p>
-            It finds the default sink's monitor source and prints everything a
-            receiver needs to reach it.
+            Open the <code>android/</code> folder in Android Studio. On the
+            phone, turn on <strong>USB debugging</strong> and plug it into the
+            computer. Press <strong>Run</strong>.
           </p>
-          <div class="term">
-            <header><span>desktop</span><span>ausha</span></header>
-<pre><span class="cue">$ </span>cargo run --release --bin ausha
-
-capture: pulse source alsa_output.pci-0000_00_1f.3-....monitor
-control: tcp/6996
-media:   udp/6997 ssrc 1b60ad3b
-pairing: xxxx-xxxx-xxxx</pre>
-          </div>
-          <div class="note">
-            <strong>The pairing token changes every time the sender starts.</strong>
-            Copy the one your own sender just printed, or pin it with
-            <code>--token &lt;token&gt;</code> so you are not retyping it each
-            session.
-          </div>
-          <p>Find the address listeners should connect to:</p>
-          <div class="term">
-            <header><span>desktop</span><span>address</span></header>
-<pre><span class="cue">$ </span>ip -4 addr show scope global | grep -oP 'inet \K[\d.]+'</pre>
-          </div>
         </div>
       </div>
 
       <div class="step">
         <span class="n">03</span>
-        <h3>Play it on another computer</h3>
+        <h3>Connect</h3>
         <div class="detail">
           <p>
-            This is the full pipeline — jitter buffer, FEC, drift correction.
-            The token may be typed with or without dashes, in any case.
+            Tap <strong>Scan QR</strong> in the app and point it at the code on
+            your screen. Sound starts straight away.
           </p>
-          <div class="term">
-            <header><span>listener</span><span>ausha-recv</span></header>
-<pre><span class="cue">$ </span>cargo run --release --bin ausha-recv -- \
-    --host <span class="dim">&lt;sender-ip&gt;</span> --token <span class="dim">&lt;token&gt;</span></pre>
-          </div>
           <p>
-            Playback goes to <code>pacat</code>, <code>aplay</code> or
-            <code>ffplay</code> — whichever it finds first. Pick one with
-            <code>--sink</code>, and choose how much the buffer holds with
-            <code>--latency low|balanced|stable</code>.
+            For calls, also turn on <strong>Call mode</strong> in the app, then
+            pick <code>ausha</code> as the microphone in Zoom, Discord, Meet —
+            whatever you are calling from.
           </p>
+          <div class="note">
+            <strong>Use headphones on the phone for calls.</strong> Speakerphone
+            echo cancellation has not been confirmed on real hardware yet, so
+            without them the person you are talking to may hear themselves.
+          </div>
         </div>
       </div>
 
       <div class="step">
         <span class="n">04</span>
-        <h3>Or pair a phone</h3>
+        <h3>Or listen on another computer</h3>
         <div class="detail">
           <p>
-            The Android app runs the same Rust core. Gradle compiles it for
-            each ABI on the way, so the native library is never stale.
+            No app needed. Use the address and code the sender printed.
           </p>
           <div class="term">
-            <header><span>android</span><span>gradle</span></header>
-<pre><span class="cue">$ </span>cd android
-<span class="cue">$ </span>./gradlew installDebug</pre>
-          </div>
-          <p>Then pair it in whichever way suits:</p>
-          <div class="tablewrap">
-            <table>
-              <thead>
-                <tr><th scope="col">Method</th><th scope="col">What you do</th></tr>
-              </thead>
-              <tbody>
-                <tr><td>Scan</td><td>Run <code>ausha --qr</code> and scan the code with the app's <em>Scan QR</em> button.</td></tr>
-                <tr><td>Tap a link</td><td>The same <code>ausha://host:port?token=…</code> link opens the app directly.</td></tr>
-                <tr><td>Pick from the list</td><td>The app lists senders it finds over mDNS. Tap one and type the token.</td></tr>
-                <tr><td>Type it</td><td>Address, port and token by hand.</td></tr>
-              </tbody>
-            </table>
+            <header><span>other computer</span><span>listen</span></header>
+<pre><span class="cue">$ </span>cargo run --release --bin ausha-recv -- \
+    --host <span class="dim">&lt;ip&gt;</span> --token <span class="dim">&lt;code&gt;</span></pre>
           </div>
           <p>
-            Playback keeps going with the screen off, holds a low-latency WiFi
-            lock so the radio does not park between beacons, and pauses for
-            calls.
+            Add <code>--latency low</code> for less delay, or
+            <code>--latency stable</code> if the WiFi is poor.
           </p>
         </div>
       </div>
     </div>
-  </div>
-</section>
-
-<section id="readout">
-  <div class="wrap">
-    <p class="eyebrow">While it runs</p>
-    <h2>The receiver tells you what it is doing.</h2>
-    <p class="section-intro">
-      Every five seconds, one line. You do not have to guess whether the
-      network is coping.
-    </p>
-
-    <div class="term" style="margin-top: 28px;">
-      <header><span>ausha-recv</span><span>every 5 s</span></header>
-<pre>    5s  depth  80/ 80 ms  latency  81 ms  jitter   2.5 ms  loss  0.00%
-        fec 0  plc 0  underruns 0  rate 1.0000</pre>
-    </div>
-
-    <dl class="legend">
-      <div><dt>depth a/b</dt><dd>Undecoded audio buffered, against the target it is aiming for.</dd></div>
-      <div><dt>latency</dt><dd>Total buffered audio — the delay this receiver adds.</dd></div>
-      <div><dt>jitter</dt><dd>How irregularly packets are arriving.</dd></div>
-      <div><dt>loss</dt><dd>Packets that never arrived at all.</dd></div>
-      <div><dt>fec / plc</dt><dd>Lost frames rebuilt from redundancy, and ones papered over.</dd></div>
-      <div><dt>underruns</dt><dd>Times the buffer ran dry. Should stay at zero.</dd></div>
-      <div><dt>rate</dt><dd>Resampling ratio correcting clock drift. Sits near 1.0000.</dd></div>
-    </dl>
-
-    <div class="note">
-      High <code>loss</code> with <code>underruns</code> still at zero means it
-      is working. The target depth grows on its own to absorb the bursts.
-    </div>
-  </div>
-</section>
-
-<section id="requires">
-  <div class="wrap">
-    <p class="eyebrow">What it needs</p>
-    <h2>Requirements.</h2>
-
-    <div class="tablewrap">
-      <table>
-        <thead>
-          <tr>
-            <th scope="col">Platform</th>
-            <th scope="col">Capture</th>
-            <th scope="col">Sender</th>
-            <th scope="col">Receiver</th>
-          </tr>
-        </thead>
-        <tbody>
-          <tr>
-            <td>Linux</td>
-            <td>PulseAudio monitor source</td>
-            <td><span class="state on">working</span></td>
-            <td><span class="state on">working</span></td>
-          </tr>
-          <tr>
-            <td>Android</td>
-            <td>—</td>
-            <td><span class="state off">not applicable</span></td>
-            <td><span class="state on">working</span></td>
-          </tr>
-          <tr>
-            <td>Windows</td>
-            <td>DirectShow loopback device</td>
-            <td><span class="state off">not implemented</span></td>
-            <td><span class="state off">not implemented</span></td>
-          </tr>
-          <tr>
-            <td>iOS</td>
-            <td>—</td>
-            <td><span class="state off">not applicable</span></td>
-            <td><span class="state off">planned</span></td>
-          </tr>
-        </tbody>
-      </table>
-    </div>
-
-    <p style="margin-top: 26px;">
-      The sender needs ffmpeg built with <code>libopus</code>. The desktop
-      receiver additionally needs one of <code>pacat</code>,
-      <code>aplay</code> or <code>ffplay</code> for output.
-    </p>
   </div>
 </section>
 
 <section id="trouble">
   <div class="wrap">
     <p class="eyebrow">If it does not connect</p>
-    <h2>Two faults look identical from the receiver.</h2>
-    <p class="section-intro">
-      Both show up as a handshake that times out, and neither appears when you
-      test on a single machine.
-    </p>
+    <h2>Usually one of five things.</h2>
 
     <div class="faults">
       <div class="fault">
-        <h3>The firewall is blocking the ports</h3>
-        <p>The sender needs inbound TCP 6996 for the handshake and UDP 6997 for the audio.</p>
+        <h3>It just times out</h3>
+        <p>The firewall. The computer needs to accept TCP 6996 and UDP 6997.</p>
         <pre>sudo ufw allow 6996/tcp &amp;&amp; sudo ufw allow 6997/udp</pre>
       </div>
       <div class="fault">
-        <h3>The network isolates its clients</h3>
+        <h3>It times out, but ping works</h3>
         <p>
-          Many routers, and nearly all guest networks, block device-to-device
-          traffic. If the sender answers <code>ping</code> but the handshake
-          still times out, this is why — use a different network.
+          Your WiFi blocks devices from talking to each other. Nearly all guest
+          networks do this. Use a different network.
         </p>
       </div>
       <div class="fault">
-        <h3>The token is from an earlier run</h3>
+        <h3>It says the pairing code is invalid</h3>
         <p>
-          <code>rejected: invalid pairing token</code> means exactly that. It
-          changes on every start; use the <code>pairing:</code> line the running
-          sender printed, or pin it with <code>--token</code>.
+          The code changes every time the sender starts. Use the one on screen
+          right now, or pin it with <code>--token</code>.
         </p>
       </div>
       <div class="fault">
         <h3>No senders appear in the app's list</h3>
+        <p>Your router blocks mDNS. Scan the QR code instead.</p>
+      </div>
+      <div class="fault">
+        <h3>Call mode says there is no microphone</h3>
         <p>
-          mDNS is blocked on many routers. Scan the QR code or type the address
-          in by hand instead.
+          The computer was started without <code>--uplink</code>. Stop it and
+          start it again with the flag.
         </p>
       </div>
     </div>
@@ -782,7 +636,7 @@ pairing: xxxx-xxxx-xxxx</pre>
         </g>
       </svg>
     </span>
-    <p>Ausha — real-time desktop audio over the local network.</p>
+    <p>Ausha — your computer's sound on your phone, over your own WiFi.</p>
     <nav>
       <a href="https://github.com/aaxis-em/ausha">Source</a>
       <a href="https://github.com/aaxis-em/ausha/blob/main/arch.md">Architecture</a>
