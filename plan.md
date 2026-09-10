@@ -3,7 +3,8 @@
 # Ausha — Mobile Receiver Design Plan
 
 Design plan for the network-side mobile receiver, plus the sender-side protocol
-changes it depends on.
+changes it depends on. §6 extends it in the other direction, using the phone's
+microphone as a capture device on the laptop.
 
 ---
 
@@ -365,7 +366,232 @@ Same core, different shell. Deferred until Android is solid.
 
 ---
 
-## 6. Phasing
+## 6. Duplex: the phone as a headset
+
+Everything above moves audio one way, from the desktop to the phone. This
+section covers the other direction: the phone's microphone reaching the laptop
+as a capture device, so that a call taken on the laptop can be spoken into and
+listened to from the phone.
+
+The downlink already does half the job — a call's audio comes out of the
+default sink like anything else, so the phone already hears the far end. What
+is missing is a microphone.
+
+### 6.1 What the laptop has to expose
+
+A call application picks its input from the system's list of capture devices,
+so the laptop has to *be* one. PulseAudio and PipeWire both offer a source
+backed by a FIFO:
+
+```bash
+pactl load-module module-pipe-source source_name=ausha \
+      file=/run/user/$UID/ausha.mic format=s16le rate=48000 channels=1
+```
+
+The sender writes decoded uplink PCM into that FIFO; the device appears in
+Zoom, Meet or Discord as "ausha". No root, no kernel module, and nothing to
+install. *Verified on this machine:* the source enumerated as
+`s16le 1ch 48000Hz` and `parecord` read from it.
+
+The module is loaded when the first uplink starts and unloaded when it ends —
+tied to the session the way the client registry is tied to its TCP connection,
+so a crashed sender does not leave a dead microphone in everyone's dropdown.
+The sender must unload by the id `load-module` returned, not by name, or it
+would tear down a pipe source someone else created.
+
+Rejected: `module-null-sink` plus `module-remap-source`, which is two modules
+doing what one does; and an ALSA loopback device (`snd-aloop`), which needs a
+kernel module and root.
+
+**Windows has no equivalent.** A virtual cable driver such as VB-Cable would be
+needed, and it is a user install rather than something the sender can arrange.
+Call mode is Linux-first, the same way capture already is.
+
+### 6.2 The uplink stream
+
+Same shape as the downlink, opposite direction, different tuning.
+
+| | Downlink (exists) | Uplink (new) |
+|---|---|---|
+| Direction | sender → phone | phone → sender |
+| Content | desktop audio | phone microphone |
+| Opus application | `audio` | `voip` |
+| Channels | stereo | mono |
+| Bitrate | 128 kbps | 24–32 kbps |
+| Frame | 20 ms | 20 ms |
+| In-band FEC | on | on |
+| Encoder | ffmpeg, on the laptop | libopus in the core, on the phone |
+| Packetiser | ffmpeg's RTP muxer | new, in `ausha-core` |
+| Receive pipeline | `Pipeline` on the phone | `Pipeline` on the laptop |
+
+Three things follow from that table:
+
+- **`voip`, not `audio`.** Opus's speech mode is materially more intelligible
+  at 24–32 kbps, which is where a microphone belongs. `audio` is tuned for
+  music and wastes bits on a signal that has none.
+- **Mono.** A microphone is one signal; sending it twice halves nothing but the
+  bitrate.
+- **The framing does not change.** One Opus frame per RTP datagram, same as the
+  downlink, so the jitter buffer, FEC recovery, loss concealment and drift
+  correction all apply unchanged. The laptop runs `Pipeline` for the uplink
+  exactly as the phone runs it for the downlink.
+
+### 6.3 What is new in `ausha-core`
+
+Two modules, both small, because the core is already direction-agnostic:
+
+- **`encode.rs`** — an Opus encoder wrapper mirroring `decode.rs`. The `opus`
+  crate is already a dependency and already ships `Encoder`; `decode.rs`'s own
+  tests use it. No new dependency.
+- **`rtp::Builder`** — writes the 12-byte header. We only parse today because
+  ffmpeg builds them for us. The parse tests already pin the layout, so the
+  builder is about thirty lines and tests as a round trip against `parse`.
+
+Nothing else moves. `JitterBuffer`, `Decoder`, `DriftController`, `Resampler`
+and `Pipeline` never knew which way the audio was going, and `Decoder::new`
+already handles mono (`core/src/decode.rs`).
+
+### 6.4 Protocol
+
+Open question 3 asked that the session protocol reserve room for this rather
+than be retrofitted. It can be extended compatibly, with no version bump:
+
+```
+C->S  {"t":"hello","ver":1,"name":"Pixel 8","token":"…","uplink":true}
+S->C  {"t":"accept","session":"<16 hex>","media_port":6997,
+       "stream":{…},
+       "uplink":{"port":6998,"ssrc":…,"codec":"opus","rate":48000,
+                 "ch":1,"ptime":20,"bitrate":32000}}
+```
+
+Both fields are `#[serde(default)]`. A phone that omits `uplink` gets exactly
+today's behaviour, and a sender that never sends one leaves the phone
+listen-only — so a mixed-version pair degrades to listening rather than
+failing, which is the right way round.
+
+The phone punches the uplink port the way it already punches the media port.
+The sender demultiplexes incoming uplink datagrams **by source address**, which
+the punch has already established, so the registry gains an address → session
+map and nothing else.
+
+**One uplink at a time.** Two phones feeding one virtual microphone would need
+mixing and a policy for whose voice wins, which is a feature nobody asked for.
+The second request is refused with `{"t":"error","reason":"uplink in use"}`.
+This restricts the microphone only; listeners stay unlimited.
+
+### 6.5 Encryption
+
+There is a trap here worth naming before any code exists. The nonce is
+`(SSRC, extended sequence)`. Two directions sharing one key **and** one SSRC
+would eventually pair the same sequence number with the same SSRC in each
+direction, repeating a nonce — the one failure ChaCha20-Poly1305 does not
+survive.
+
+Two ways out: give the uplink its own SSRC, or its own key.
+
+**Recommendation: a separate uplink key**, derived from the same PBKDF2 output
+through one more step with a direction label. Distinct SSRCs would also work,
+but it relies on the sender never generating a colliding pair — a property that
+holds by luck and that nobody would notice breaking. A separate key makes it
+structural instead.
+
+`--encrypt` covers the session, not one direction: if the downlink is
+encrypted the uplink is too.
+
+### 6.6 Echo, and why call mode is a different audio path
+
+**Recommendation: platform AEC, so that the phone's speaker works.**
+
+Without echo cancellation the loop is: the laptop plays the far end → the
+phone's speaker → the phone's microphone → back to the laptop → the far end
+hears their own voice a quarter-second late. That is unusable, and it is the
+single thing that decides whether this feature is worth building.
+
+Android cancels it for free, but only in one configuration:
+
+| | Setting |
+|---|---|
+| Mode | `AudioManager.MODE_IN_COMMUNICATION` |
+| Capture | `MediaRecorder.AudioSource.VOICE_COMMUNICATION` |
+| Playback | `AudioAttributes.USAGE_VOICE_COMMUNICATION` |
+| Effects | `AcousticEchoCanceler`, `NoiseSuppressor`, `AutomaticGainControl` |
+
+The canceller references the device's own playback path — and in this
+configuration our downlink *is* that path, so the reference signal is exactly
+the thing that needs cancelling. This is why it works here without us building
+anything: the hard part of AEC is a sample-aligned reference, and the platform
+already has one.
+
+**What it costs, which has to be understood before building it:**
+
+- `PERFORMANCE_MODE_LOW_LATENCY` is not honoured on the communication path.
+- The route commonly runs at 16 kHz, so the downlink is voice-quality while
+  call mode is on.
+- `USAGE_MEDIA` and `USAGE_VOICE_COMMUNICATION` cannot both be in effect.
+
+So **music mode and call mode are two configurations of the phone's audio, not
+a flag on one.** Switching tears down and rebuilds `AudioTrack`, and the UI has
+to say what is being traded: call mode gives up fidelity to get a usable
+microphone.
+
+Rejected: our own AEC, via a Rust binding to WebRTC's `audio_processing`. It
+would keep the 48 kHz low-latency path in both directions, but it needs the
+playback reference sample-aligned with the capture, and we would be
+reconstructing that alignment across an `AudioTrack` whose clock we do not own.
+The platform hands it to us. Revisit only if the 16 kHz downlink turns out to
+be what people actually complain about.
+
+### 6.7 Latency budget
+
+Round trip is what matters now, not one way.
+
+| Stage | Budget |
+|---|---|
+| Phone capture (`VOICE_COMMUNICATION`) | 20–40 ms |
+| Opus `voip` encode (20 ms frame + lookahead) | ~27 ms |
+| LAN transit | 1–5 ms |
+| Uplink jitter buffer (Voice preset) | ~40 ms |
+| Opus decode and FIFO write | ~5 ms |
+| **Phone mouth → laptop call app** | **~95–120 ms** |
+
+The downlink runs the existing budget at its tightest preset, and the two add
+to whatever the call application and the far end contribute. Under about
+150 ms each way a conversation feels normal; above roughly 250 ms people start
+talking over each other.
+
+**A fourth preset, `Voice`: (40, 100) ms.** Narrower than `Low`, because a
+conversation notices delay more than it notices a concealed frame — the
+opposite trade to music. Call mode selects it for both directions.
+
+### 6.8 Android
+
+- **`RECORD_AUDIO`**, requested when call mode is first switched on rather than
+  at startup. A media app asking for the microphone on first launch reads as
+  something else entirely.
+- **`foregroundServiceType="mediaPlayback|microphone"`.** From API 30 the
+  microphone type must be declared *and* the permission held before
+  `startForeground`, or it throws.
+- **A microphone foreground service cannot be started from the background** on
+  API 31+. Call mode therefore has to be switched on from the UI; it cannot
+  come up from a pairing link the way listening does.
+- **`AudioRecord` on its own thread**, mirroring `AudioEngine`: one thread
+  pulls from the device and pushes into the encoder. The existing playback
+  thread is untouched.
+- **MediaSession pause must stop the microphone too.** A paused call that keeps
+  transmitting the room is a privacy bug, not a latency bug, and it is the kind
+  that gets noticed once.
+
+### 6.9 What this deliberately does not do
+
+- **It does not touch the laptop's own microphone.** Call mode adds a device;
+  choosing it stays the user's job in their call application's dropdown.
+  Switching someone's microphone for them mid-call is worse than a dropdown.
+- **It does not work on Windows**, for want of a pipe source (6.1).
+- **It does not mix.** One phone owns the microphone (6.4).
+
+---
+
+## 7. Phasing
 
 Ordered so that each phase is independently testable and the risky parts get
 validated before any mobile code exists.
@@ -498,9 +724,30 @@ hundred milliseconds and puts that out of reach.
 
 **Phase 5 — iOS**
 
+**Phase 6 — Duplex / call mode** — designed in §6, not started
+
+Ordering against Phase 5 is a priority call, not a dependency: nothing here
+needs iOS, and nothing in iOS needs this.
+
+- [ ] `ausha-core`: `encode.rs`, `rtp::Builder`, the `Voice` latency preset
+- [ ] Protocol: `uplink` in `hello` and `accept`, a separate uplink key, and
+      address-based demultiplexing in the registry
+- [ ] Sender: uplink socket, one `Pipeline` per uplink, and the
+      `module-pipe-source` lifecycle tied to the session
+- [ ] Android: `AudioRecord` on the communication path with platform AEC, the
+      call-mode switch, `RECORD_AUDIO`, and the microphone service type
+- [ ] *Verify:* a real call with the phone on speaker and the far end
+      confirming no echo; round-trip measured rather than estimated; and
+      `scripts/soak.sh` extended to drive an uplink
+
+The risk to retire first is 6.6 — whether platform AEC actually cancels our
+downlink cleanly on real hardware. That is one Android spike against a laptop
+playing a recording, and it decides whether the rest is worth building. Do it
+before the protocol work, not after.
+
 ---
 
-## 7. Open questions
+## 8. Open questions
 
 1. **Is A/V sync with desktop video a goal?** If the user watches a film on the
    desktop and listens on the phone, we need the clock-offset work in 2.5 and a
@@ -508,9 +755,11 @@ hundred milliseconds and puts that out of reach.
    dropped and only drift control is needed. This changes Phase 1's scope.
 2. **How many simultaneous listeners?** Under ~8 the unicast decision in 2.3
    holds unconditionally. Above that, revisit.
-3. **Does the phone ever need to send audio back?** If duplex is ever wanted,
-   the session protocol in 2.4 should reserve room for it now rather than being
-   retrofitted.
+3. ~~**Does the phone ever need to send audio back?**~~ **Answered: yes** —
+   using the phone as a headset for a call taken on the laptop. Designed in
+   §6, which extends 2.4's handshake compatibly rather than bumping the
+   version. The open part is no longer whether, but whether the 16 kHz
+   downlink that platform AEC imposes (6.6) is an acceptable trade.
 4. **Minimum Android API?** API 26 covers ~95% of devices and gives
    `PERFORMANCE_MODE_LOW_LATENCY` and float PCM. API 29 is needed for
    `WIFI_MODE_FULL_LOW_LATENCY`, which we can feature-detect.
