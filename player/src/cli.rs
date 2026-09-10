@@ -18,6 +18,8 @@ pub struct Cli {
     pub no_discovery: bool,
     pub no_qr: bool,
     pub encrypt: bool,
+    pub uplink: bool,
+    pub uplink_port: u16,
 }
 
 impl Default for Cli {
@@ -35,6 +37,8 @@ impl Default for Cli {
             no_discovery: false,
             no_qr: false,
             encrypt: false,
+            uplink: false,
+            uplink_port: config::DEFAULT_UPLINK_PORT,
         }
     }
 }
@@ -59,6 +63,11 @@ Options:
   --encrypt               Encrypt the media payload with ChaCha20-Poly1305,
                           keyed by the pairing token. Ausha receivers follow
                           automatically; ffplay and --sdp-out cannot
+  --uplink                Accept a receiver's microphone and publish it as a
+                          capture device named ausha, so a call taken on this
+                          machine can be spoken into from the phone. One
+                          receiver at a time. Linux only
+  --uplink-port <port>    UDP port the microphone arrives on (default 6998)
   --name <name>           Name advertised to receivers (default this host)
   --no-discovery          Do not advertise over mDNS
   --no-qr                 Do not print the pairing QR code
@@ -91,6 +100,8 @@ pub fn parse() -> Result<Cli, String> {
             "--no-discovery" => cli.no_discovery = true,
             "--no-qr" => cli.no_qr = true,
             "--encrypt" => cli.encrypt = true,
+            "--uplink" => cli.uplink = true,
+            "--uplink-port" => cli.uplink_port = parse_with(&flag, &value()?)?,
             other => return Err(format!("unknown argument: {other}")),
         }
     }

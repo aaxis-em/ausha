@@ -12,6 +12,8 @@ seconds=60
 loss=0
 latency=balanced
 encrypt=()
+uplink=()
+uplink_tone=()
 token=soaksoaksoak
 
 usage() {
@@ -24,17 +26,20 @@ Options:
   -l <percent>     Drop this share of each receiver's packets (default 0)
   -p <preset>      Latency preset: low, balanced, stable (default balanced)
   -e               Encrypt the media path
+  -u               Also run an uplink: one receiver sends a tone up, and the
+                   sender publishes it as the "ausha" capture device
   -h               Show this message
 USAGE
 }
 
-while getopts "n:d:l:p:eh" option; do
+while getopts "n:d:l:p:euh" option; do
     case "$option" in
         n) clients=$OPTARG ;;
         d) seconds=$OPTARG ;;
         l) loss=$OPTARG ;;
         p) latency=$OPTARG ;;
         e) encrypt=(--encrypt) ;;
+        u) uplink=(--uplink); uplink_tone=(--uplink-tone) ;;
         h) usage; exit 0 ;;
         *) usage; exit 2 ;;
     esac
@@ -47,7 +52,8 @@ trap 'kill "${sender_pid:-}" 2>/dev/null; wait "${sender_pid:-}" 2>/dev/null; rm
 cargo build --release --manifest-path "$root/Cargo.toml" || exit 1
 
 "$root/target/release/ausha" \
-    --token "$token" --name soak --no-qr --no-discovery "${encrypt[@]}" \
+    --token "$token" --name soak --no-qr --no-discovery \
+    "${encrypt[@]}" "${uplink[@]}" \
     >"$out/sender.log" 2>&1 &
 sender_pid=$!
 
@@ -63,13 +69,18 @@ if ! kill -0 "$sender_pid" 2>/dev/null; then
     exit 1
 fi
 
-echo "soak: $clients receivers, ${seconds}s, ${loss}% simulated loss, $latency${encrypt:+, encrypted}"
+echo "soak: $clients receivers, ${seconds}s, ${loss}% simulated loss, \
+$latency${encrypt:+, encrypted}${uplink:+, with an uplink}"
 
 for id in $(seq 1 "$clients"); do
+    # Only the first receiver takes the microphone; the sender allows one, and
+    # the rest being refused is itself worth exercising.
+    tone=()
+    [[ $id -eq 1 ]] && tone=("${uplink_tone[@]}")
     "$root/target/release/ausha-recv" \
         --host 127.0.0.1 --token "$token" --name "soak-$id" \
         --sink null --latency "$latency" \
-        --run-for "$seconds" --simulate-loss "$loss" \
+        --run-for "$seconds" --simulate-loss "$loss" "${tone[@]}" \
         >"$out/recv-$id.log" 2>&1 &
 done
 wait $(jobs -p | grep -v "^$sender_pid$") 2>/dev/null
@@ -105,6 +116,15 @@ spread=$(grep -h "^played" "$out"/recv-*.log |
     sed -E 's/.*: ([0-9]+) packets.*/\1/' | sort -n | awk 'NR == 1 { min = $1 } END { print $1 - min }')
 echo
 echo "packet-count spread across receivers: $spread"
+
+if [[ -n ${uplink:-} ]]; then
+    summary=$(grep "^uplink: [0-9]" "$out/sender.log" | tail -1)
+    echo "uplink: ${summary#uplink: }"
+    if [[ -z $summary ]] || [[ $summary != *"0 underruns"* ]]; then
+        echo "FAILED: the uplink underran or carried nothing (logs in $out)" >&2
+        failures=$((failures + 1))
+    fi
+fi
 
 if [[ $failures -gt 0 ]]; then
     echo "FAILED: $failures of $clients receivers glitched (logs in $out)" >&2

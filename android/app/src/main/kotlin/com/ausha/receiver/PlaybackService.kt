@@ -9,6 +9,7 @@ import android.content.BroadcastReceiver
 import android.content.Context
 import android.content.Intent
 import android.content.IntentFilter
+import android.content.pm.PackageManager
 import android.content.pm.ServiceInfo
 import android.media.AudioAttributes
 import android.media.AudioFocusRequest
@@ -59,6 +60,7 @@ class PlaybackService : Service(), Transport.Controls {
         val token: String,
         val name: String,
         val latency: AudioEngine.Latency,
+        val callMode: Boolean,
     )
 
     /** Unplugging headphones should pause rather than play out loud. */
@@ -91,15 +93,22 @@ class PlaybackService : Service(), Transport.Controls {
             }
         }
         val host = intent?.getStringExtra(EXTRA_HOST) ?: return START_NOT_STICKY
+        val callMode = intent.getBooleanExtra(EXTRA_CALL_MODE, false) && canRecord()
         val next = Target(
             host = host,
             port = intent.getIntExtra(EXTRA_PORT, 6996),
             token = intent.getStringExtra(EXTRA_TOKEN).orEmpty(),
             name = intent.getStringExtra(EXTRA_NAME) ?: Build.MODEL,
-            latency = AudioEngine.Latency.entries[
-                intent.getIntExtra(EXTRA_LATENCY, AudioEngine.Latency.Balanced.ordinal)
-                    .coerceIn(0, AudioEngine.Latency.entries.lastIndex)
-            ],
+            // Call mode brings its own buffer: a conversation needs a tighter
+            // one than any listening preset, so it overrides the choice.
+            latency = when {
+                callMode -> AudioEngine.Latency.Voice
+                else -> AudioEngine.Latency.presets[
+                    intent.getIntExtra(EXTRA_LATENCY, AudioEngine.Latency.Balanced.ordinal)
+                        .coerceIn(0, AudioEngine.Latency.presets.lastIndex)
+                ]
+            },
+            callMode = callMode,
         )
         // Pairing with a different sender while playing should switch to it,
         // and the engine will not restart itself while it is still running.
@@ -169,27 +178,44 @@ class PlaybackService : Service(), Transport.Controls {
 
     private fun startPlayback() {
         val target = target ?: return
+        // The echo canceller only works on the communication path, and the
+        // whole path — capture, playback and this mode — has to be on it
+        // together or it has nothing to cancel against.
+        audioManager.mode = when {
+            target.callMode -> AudioManager.MODE_IN_COMMUNICATION
+            else -> AudioManager.MODE_NORMAL
+        }
         Playback.engine.start(
             target.host,
             target.port,
             target.token,
             target.name,
             target.latency,
+            target.callMode,
         )
     }
 
     private fun stopPlayback() {
         Playback.engine.stop()
+        audioManager.mode = AudioManager.MODE_NORMAL
     }
+
+    /**
+     * From API 30 a microphone foreground service needs the permission held
+     * before `startForeground`, not merely declared, or it throws.
+     */
+    private fun canRecord(): Boolean =
+        checkSelfPermission(android.Manifest.permission.RECORD_AUDIO) ==
+            PackageManager.PERMISSION_GRANTED
 
     private fun startForegroundCompat() {
         val notification = buildNotification(Playback.state.value)
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
-            startForeground(
-                NOTIFICATION_ID,
-                notification,
-                ServiceInfo.FOREGROUND_SERVICE_TYPE_MEDIA_PLAYBACK,
-            )
+            var types = ServiceInfo.FOREGROUND_SERVICE_TYPE_MEDIA_PLAYBACK
+            if (target?.callMode == true) {
+                types = types or ServiceInfo.FOREGROUND_SERVICE_TYPE_MICROPHONE
+            }
+            startForeground(NOTIFICATION_ID, notification, types)
         } else {
             startForeground(NOTIFICATION_ID, notification)
         }
@@ -238,7 +264,10 @@ class PlaybackService : Service(), Transport.Controls {
     private fun describe(state: AudioEngine.State): String {
         val host = target?.host ?: return "Not connected"
         return when (state) {
-            AudioEngine.State.Playing -> "Streaming from $host"
+            AudioEngine.State.Playing -> when (target?.callMode) {
+                true -> "Call mode with $host"
+                else -> "Streaming from $host"
+            }
             AudioEngine.State.Connecting -> "Connecting to $host…"
             AudioEngine.State.Failed -> Playback.engine.failure ?: "Playback failed"
             AudioEngine.State.Idle, AudioEngine.State.Stopped ->
@@ -364,6 +393,7 @@ class PlaybackService : Service(), Transport.Controls {
         const val EXTRA_TOKEN = "token"
         const val EXTRA_NAME = "name"
         const val EXTRA_LATENCY = "latency"
+        const val EXTRA_CALL_MODE = "call_mode"
 
         fun start(
             context: Context,
@@ -372,6 +402,7 @@ class PlaybackService : Service(), Transport.Controls {
             token: String,
             name: String,
             latency: AudioEngine.Latency,
+            callMode: Boolean = false,
         ) {
             val intent = Intent(context, PlaybackService::class.java)
                 .putExtra(EXTRA_HOST, host)
@@ -379,6 +410,7 @@ class PlaybackService : Service(), Transport.Controls {
                 .putExtra(EXTRA_TOKEN, token)
                 .putExtra(EXTRA_NAME, name)
                 .putExtra(EXTRA_LATENCY, latency.ordinal)
+                .putExtra(EXTRA_CALL_MODE, callMode)
             context.startForegroundService(intent)
         }
 

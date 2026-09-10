@@ -6,6 +6,7 @@ pub const PROTOCOL_VERSION: u16 = 1;
 
 pub const DEFAULT_CONTROL_PORT: u16 = 6996;
 pub const DEFAULT_MEDIA_PORT: u16 = 6997;
+pub const DEFAULT_UPLINK_PORT: u16 = 6998;
 pub const DEFAULT_BITRATE_KBPS: u32 = 128;
 
 pub const SAMPLE_RATE: u32 = 48000;
@@ -13,6 +14,13 @@ pub const CHANNELS: u8 = 2;
 pub const FRAME_MS: u32 = 20;
 pub const RTP_PAYLOAD_TYPE: u8 = 96;
 pub const EXPECTED_LOSS_PERCENT: u32 = 5;
+
+/// The uplink carries one microphone, so it is mono, and speech at 32 kbps in
+/// Opus's voip mode is transparent enough for a call. Its own payload type
+/// keeps a stray downlink packet from being mistaken for one of its frames.
+pub const UPLINK_CHANNELS: u8 = 1;
+pub const UPLINK_BITRATE: u32 = 32_000;
+pub const UPLINK_PAYLOAD_TYPE: u8 = 97;
 
 pub const PING_INTERVAL: Duration = Duration::from_secs(2);
 pub const SESSION_TIMEOUT: Duration = Duration::from_secs(10);

@@ -4,10 +4,12 @@
 //! receiver and the Android app differ only in where the samples end up.
 
 mod session;
+mod uplink;
 
 pub use ausha_core::config;
 pub use ausha_core::pipeline::{Latency, Report, Stats};
-pub use ausha_core::protocol::StreamParams;
+pub use ausha_core::protocol::{StreamParams, UplinkParams};
+pub use uplink::Uplink;
 
 use std::io;
 use std::net::UdpSocket;
@@ -17,7 +19,7 @@ use std::sync::{Arc, Mutex};
 use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
-use ausha_core::crypto::Opener;
+use ausha_core::crypto::{Direction, Opener};
 use ausha_core::pipeline::Pipeline;
 
 pub struct Config {
@@ -29,6 +31,9 @@ pub struct Config {
     /// real sender.
     pub simulate_loss: u32,
     pub latency: Latency,
+    /// Asks the sender for a microphone channel back. Only granted if the
+    /// sender was started with `--uplink`.
+    pub uplink: bool,
 }
 
 /// One datagram as it came off the wire, with the moment it arrived.
@@ -63,6 +68,7 @@ pub struct Client {
     incoming: Receiver<Arrival>,
     monitor: Monitor,
     params: StreamParams,
+    uplink: Option<Uplink>,
     threads: Vec<JoinHandle<()>>,
 }
 
@@ -75,19 +81,38 @@ impl Client {
             config.control_port,
             &config.token,
             &config.name,
+            config.uplink,
         )?;
         let params = session.params.clone();
         let pipeline = Pipeline::with_latency(&params, config.latency).map_err(io::Error::other)?;
+
+        let secret = session
+            .encryption
+            .as_ref()
+            .map(|encryption| encryption.secret(&config.token))
+            .transpose()
+            .map_err(io::Error::other)?;
+        let uplink = session
+            .uplink
+            .as_ref()
+            .map(|params| {
+                Uplink::new(
+                    session.media.try_clone()?,
+                    &config.host,
+                    params,
+                    secret.as_ref(),
+                )
+            })
+            .transpose()?;
 
         let monitor = Monitor {
             stats: Arc::new(Mutex::new(pipeline.stats())),
             running: Arc::new(AtomicBool::new(true)),
         };
 
-        let opener = params
-            .key(&config.token)
-            .map_err(io::Error::other)?
-            .map(|key| Opener::new(&key));
+        let opener = secret
+            .as_ref()
+            .map(|secret| Opener::new(&secret.key(Direction::Downlink)));
 
         let (arrivals, incoming) = mpsc::channel();
         let media = session.media.try_clone()?;
@@ -107,8 +132,16 @@ impl Client {
             incoming,
             monitor,
             params,
+            uplink,
             threads,
         })
+    }
+
+    /// The uplink, once the sender has granted one. `None` means this client is
+    /// a listener, either because it did not ask or because the sender was not
+    /// started with `--uplink`.
+    pub fn uplink(&mut self) -> Option<&mut Uplink> {
+        self.uplink.as_mut()
     }
 
     pub fn params(&self) -> &StreamParams {

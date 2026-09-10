@@ -1,4 +1,4 @@
-//! RTP packet parsing (RFC 3550) and 16-bit sequence number extension.
+//! RTP packet parsing (RFC 3550), building, and 16-bit sequence extension.
 
 pub const HEADER_LEN: usize = 12;
 const VERSION: u8 = 2;
@@ -60,6 +60,48 @@ pub fn parse(datagram: &[u8]) -> Result<Packet<'_>, Error> {
         ssrc: u32::from_be_bytes([datagram[8], datagram[9], datagram[10], datagram[11]]),
         payload: &datagram[start..end],
     })
+}
+
+/// Writes the packets the uplink sends. The downlink never needs this — ffmpeg
+/// builds its own headers — so this only ever emits the shape we produce: no
+/// CSRC, no extension, no padding.
+pub struct Builder {
+    payload_type: u8,
+    ssrc: u32,
+    sequence: u16,
+    timestamp: u32,
+}
+
+impl Builder {
+    /// Starts at sequence and timestamp zero rather than at a random offset as
+    /// RFC 3550 suggests. The offset exists to make streams hard to correlate
+    /// under SRTP; here the SSRC is already fresh per session, and starting at
+    /// zero makes a capture far easier to read.
+    pub fn new(payload_type: u8, ssrc: u32) -> Self {
+        Self {
+            payload_type,
+            ssrc,
+            sequence: 0,
+            timestamp: 0,
+        }
+    }
+
+    /// Appends one frame's packet to `out`, which is cleared first. `samples`
+    /// is the frame's length in samples per channel, which is what the RTP
+    /// timestamp counts.
+    pub fn build(&mut self, payload: &[u8], samples: u32, out: &mut Vec<u8>) {
+        out.clear();
+        out.reserve(HEADER_LEN + payload.len());
+        out.push(VERSION << 6);
+        out.push(self.payload_type & 0x7f);
+        out.extend_from_slice(&self.sequence.to_be_bytes());
+        out.extend_from_slice(&self.timestamp.to_be_bytes());
+        out.extend_from_slice(&self.ssrc.to_be_bytes());
+        out.extend_from_slice(payload);
+
+        self.sequence = self.sequence.wrapping_add(1);
+        self.timestamp = self.timestamp.wrapping_add(samples);
+    }
 }
 
 /// Lifts 16-bit sequence numbers into a monotonic 64-bit space so the jitter
@@ -203,5 +245,52 @@ mod tests {
         extender.extend(100);
         assert_eq!(extender.extend(103), 103);
         assert_eq!(extender.extend(102), 102);
+    }
+}
+
+#[cfg(test)]
+mod builder_tests {
+    use super::*;
+
+    #[test]
+    fn builds_a_packet_that_parses_back() {
+        let mut builder = Builder::new(97, 0xdead_beef);
+        let mut out = Vec::new();
+        builder.build(&[1, 2, 3], 960, &mut out);
+
+        let packet = parse(&out).unwrap();
+        assert_eq!(packet.payload_type, 97);
+        assert_eq!(packet.ssrc, 0xdead_beef);
+        assert_eq!(packet.sequence, 0);
+        assert_eq!(packet.timestamp, 0);
+        assert_eq!(packet.payload, &[1, 2, 3]);
+        assert!(!packet.marker);
+    }
+
+    #[test]
+    fn advances_the_sequence_by_one_and_the_timestamp_by_a_frame() {
+        let mut builder = Builder::new(97, 1);
+        let mut out = Vec::new();
+        for expected in 0..4u16 {
+            builder.build(&[0], 960, &mut out);
+            let packet = parse(&out).unwrap();
+            assert_eq!(packet.sequence, expected);
+            assert_eq!(packet.timestamp, u32::from(expected) * 960);
+        }
+    }
+
+    #[test]
+    fn wraps_the_sequence_the_way_the_extender_expects() {
+        let mut builder = Builder::new(97, 1);
+        builder.sequence = 65534;
+        let mut out = Vec::new();
+        let mut extender = SequenceExtender::default();
+
+        let mut extended = Vec::new();
+        for _ in 0..4 {
+            builder.build(&[0], 960, &mut out);
+            extended.push(extender.extend(parse(&out).unwrap().sequence));
+        }
+        assert_eq!(extended, [65534, 65535, 65536, 65537]);
     }
 }

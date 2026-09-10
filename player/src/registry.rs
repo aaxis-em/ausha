@@ -19,6 +19,8 @@ struct Session {
 struct Inner {
     sessions: HashMap<SessionId, Session>,
     static_targets: Vec<SocketAddr>,
+    /// Only one session may hold the microphone at a time.
+    uplink_owner: Option<SessionId>,
 }
 
 #[derive(Default)]
@@ -57,8 +59,26 @@ impl Registry {
     }
 
     pub fn close(&self, id: SessionId) -> Option<String> {
-        let session = self.inner.lock().unwrap().sessions.remove(&id)?;
+        let mut inner = self.inner.lock().unwrap();
+        if inner.uplink_owner == Some(id) {
+            inner.uplink_owner = None;
+        }
+        let session = inner.sessions.remove(&id)?;
         Some(session.name)
+    }
+
+    /// Takes the microphone for this session, or reports that another session
+    /// already holds it. Released by `close`, so it cannot outlive the
+    /// connection that took it.
+    pub fn claim_uplink(&self, id: SessionId) -> bool {
+        let mut inner = self.inner.lock().unwrap();
+        match inner.uplink_owner {
+            Some(owner) if owner != id => false,
+            _ => {
+                inner.uplink_owner = Some(id);
+                true
+            }
+        }
     }
 
     pub fn add_static_target(&self, addr: SocketAddr) {

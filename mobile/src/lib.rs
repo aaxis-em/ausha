@@ -1,9 +1,9 @@
 //! JNI bridge for the Android app.
 //!
 //! Deliberately thin: everything above the audio device already lives in
-//! `ausha-client`, so this only marshals four calls and hands the app a slab
-//! of float samples. Adding logic here would mean writing it twice when iOS
-//! arrives.
+//! `ausha-client`, so this only marshals a handful of calls and moves slabs of
+//! float samples in each direction. Adding logic here would mean writing it
+//! twice when iOS arrives.
 
 use std::ffi::c_void;
 
@@ -61,6 +61,7 @@ pub extern "system" fn Java_com_ausha_receiver_Native_nativeConnect(
     name: JString,
     simulate_loss: jint,
     latency: jint,
+    uplink: jint,
 ) -> jlong {
     let config = Config {
         host: string_arg(&mut env, &host),
@@ -71,14 +72,23 @@ pub extern "system" fn Java_com_ausha_receiver_Native_nativeConnect(
         latency: match latency {
             0 => Latency::Low,
             2 => Latency::Stable,
+            3 => Latency::Voice,
             _ => Latency::Balanced,
         },
+        uplink: uplink != 0,
     };
     log::info!("connecting to {}:{}", config.host, config.control_port);
 
     match Client::connect(&config) {
-        Ok(client) => {
+        Ok(mut client) => {
             log::info!("connected: {:?}", client.params());
+            match client.uplink() {
+                Some(uplink) => {
+                    log::info!("uplink granted, {} samples a frame", uplink.frame_len())
+                }
+                None if config.uplink => log::warn!("uplink asked for but not granted"),
+                None => {}
+            }
             Box::into_raw(Box::new(Handle { client })) as jlong
         }
         Err(e) => {
@@ -111,6 +121,57 @@ pub extern "system" fn Java_com_ausha_receiver_Native_nativeFill(
         std::slice::from_raw_parts_mut(elements.as_mut_ptr() as *mut jfloat, elements.len())
     };
     handle.client.fill(samples).filled as jint
+}
+
+/// Interleaved samples one uplink frame needs, or 0 when the sender granted no
+/// microphone channel. Kotlin sizes its capture buffer from this.
+#[unsafe(no_mangle)]
+pub extern "system" fn Java_com_ausha_receiver_Native_nativeUplinkFrame(
+    _env: JNIEnv,
+    _class: JClass,
+    handle: jlong,
+) -> jint {
+    match to_handle(handle) {
+        Some(handle) => handle
+            .client
+            .uplink()
+            .map_or(0, |uplink| uplink.frame_len() as jint),
+        None => 0,
+    }
+}
+
+/// Encodes and sends one captured frame. Called from the microphone thread,
+/// which is the only caller, exactly as `nativeFill` is only ever called from
+/// the playback thread.
+#[unsafe(no_mangle)]
+pub extern "system" fn Java_com_ausha_receiver_Native_nativeUplinkSend(
+    mut env: JNIEnv,
+    _class: JClass,
+    handle: jlong,
+    input: JFloatArray,
+) -> jint {
+    let Some(handle) = to_handle(handle) else {
+        return -1;
+    };
+    // Safety: `input` is a Java float array the caller owns for this call, and
+    // nothing is written back, so no copy needs returning.
+    let elements = match unsafe { env.get_array_elements(&input, ReleaseMode::NoCopyBack) } {
+        Ok(elements) => elements,
+        Err(_) => return -1,
+    };
+    let samples: &[f32] =
+        unsafe { std::slice::from_raw_parts(elements.as_ptr() as *const jfloat, elements.len()) };
+
+    match handle.client.uplink() {
+        Some(uplink) => match uplink.send(samples) {
+            Ok(()) => 0,
+            Err(e) => {
+                log::warn!("uplink send failed: {e}");
+                -1
+            }
+        },
+        None => -1,
+    }
 }
 
 #[unsafe(no_mangle)]

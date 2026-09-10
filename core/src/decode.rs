@@ -19,6 +19,12 @@ impl std::fmt::Display for Error {
 
 impl std::error::Error for Error {}
 
+impl From<opus::Error> for Error {
+    fn from(e: opus::Error) -> Self {
+        Self(e)
+    }
+}
+
 impl Decoder {
     pub fn new(sample_rate: u32, channels: u8, frame_ms: u32) -> Result<Self, Error> {
         let layout = match channels {

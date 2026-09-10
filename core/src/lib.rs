@@ -8,6 +8,7 @@ pub mod config;
 pub mod crypto;
 pub mod decode;
 pub mod drift;
+pub mod encode;
 pub mod jitter;
 pub mod lines;
 pub mod pipeline;

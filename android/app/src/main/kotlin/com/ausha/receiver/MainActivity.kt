@@ -60,6 +60,7 @@ fun AushaApp(links: MutableStateFlow<Pairing?>) {
     var token by rememberSaveable { mutableStateOf("") }
     var scanning by rememberSaveable { mutableStateOf(false) }
     var latency by rememberSaveable { mutableStateOf(AudioEngine.Latency.Balanced) }
+    var callMode by rememberSaveable { mutableStateOf(false) }
     var stats by remember { mutableStateOf(Stats()) }
     val state by Playback.state.collectAsState()
 
@@ -67,6 +68,7 @@ fun AushaApp(links: MutableStateFlow<Pairing?>) {
         rememberPermissionState(Manifest.permission.POST_NOTIFICATIONS)
     } else null
     val camera = rememberPermissionState(Manifest.permission.CAMERA)
+    val microphone = rememberPermissionState(Manifest.permission.RECORD_AUDIO)
 
     // A pairing link carries everything needed, so acting on it immediately is
     // the point: scanning a code should start playback, not fill in a form.
@@ -77,6 +79,9 @@ fun AushaApp(links: MutableStateFlow<Pairing?>) {
             token = it.token
             scanning = false
             links.value = null
+            // A link never turns the microphone on: a microphone foreground
+            // service cannot be started from the background, and switching it
+            // on is a decision worth making deliberately anyway.
             PlaybackService.start(context, it.host, it.port, it.token, Build.MODEL, latency)
         }
     }
@@ -171,26 +176,41 @@ fun AushaApp(links: MutableStateFlow<Pairing?>) {
             Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
                 Text("Latency", style = MaterialTheme.typography.titleSmall)
                 SingleChoiceSegmentedButtonRow(Modifier.fillMaxWidth()) {
-                    AudioEngine.Latency.entries.forEachIndexed { index, option ->
+                    AudioEngine.Latency.presets.forEachIndexed { index, option ->
                         SegmentedButton(
                             selected = latency == option,
                             onClick = { latency = option },
+                            enabled = !callMode,
                             shape = SegmentedButtonDefaults.itemShape(
                                 index,
-                                AudioEngine.Latency.entries.size,
+                                AudioEngine.Latency.presets.size,
                             ),
                         ) { Text(option.name) }
                     }
                 }
                 Text(
-                    when (latency) {
-                        AudioEngine.Latency.Low -> "Least delay. Best on a quiet network."
-                        AudioEngine.Latency.Balanced -> "Default. Absorbs ordinary WiFi loss."
-                        AudioEngine.Latency.Stable -> "Deepest buffer. For a weak signal."
+                    when {
+                        callMode -> "Call mode uses its own, tighter buffer."
+                        latency == AudioEngine.Latency.Low ->
+                            "Least delay. Best on a quiet network."
+                        latency == AudioEngine.Latency.Stable ->
+                            "Deepest buffer. For a weak signal."
+                        else -> "Default. Absorbs ordinary WiFi loss."
                     },
                     style = MaterialTheme.typography.bodySmall,
                 )
             }
+
+            CallMode(
+                enabled = callMode,
+                granted = microphone.status.isGranted,
+                onChange = { wanted ->
+                    callMode = wanted
+                    if (wanted && !microphone.status.isGranted) {
+                        microphone.launchPermissionRequest()
+                    }
+                },
+            )
 
             Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
                 Button(
@@ -202,6 +222,7 @@ fun AushaApp(links: MutableStateFlow<Pairing?>) {
                             token.trim(),
                             Build.MODEL,
                             latency,
+                            callMode,
                         )
                     },
                     enabled = host.isNotBlank() && token.isNotBlank() &&
@@ -216,6 +237,40 @@ fun AushaApp(links: MutableStateFlow<Pairing?>) {
 
                 OutlinedButton(onClick = { scanning = true }) { Text("Scan QR") }
             }
+        }
+    }
+}
+
+/**
+ * Call mode is a mode, not a setting: it moves the whole audio path onto the
+ * platform's communication route so that the echo canceller has our own
+ * playback to cancel against, and that route trades fidelity for it.
+ */
+@Composable
+private fun CallMode(enabled: Boolean, granted: Boolean, onChange: (Boolean) -> Unit) {
+    Card(Modifier.fillMaxWidth()) {
+        Row(
+            Modifier.padding(16.dp).fillMaxWidth(),
+            horizontalArrangement = Arrangement.SpaceBetween,
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(2.dp)) {
+                Text("Call mode", style = MaterialTheme.typography.titleSmall)
+                Text(
+                    when {
+                        enabled && !granted ->
+                            "Needs permission to use the microphone."
+                        enabled ->
+                            "This phone is the microphone. Choose “ausha” as the input " +
+                                "in your call app. Sound quality drops while this is on."
+                        else ->
+                            "Send this phone’s microphone to the computer, to take a " +
+                                "call on it from here."
+                    },
+                    style = MaterialTheme.typography.bodySmall,
+                )
+            }
+            Switch(checked = enabled, onCheckedChange = onChange)
         }
     }
 }

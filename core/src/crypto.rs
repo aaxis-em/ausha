@@ -7,7 +7,7 @@
 
 use chacha20poly1305::aead::{Aead, Payload};
 use chacha20poly1305::{ChaCha20Poly1305, KeyInit, Nonce};
-use sha2::Sha256;
+use sha2::{Digest, Sha256};
 
 use crate::protocol::normalize_token;
 use crate::rtp::{self, SequenceExtender};
@@ -42,21 +42,56 @@ impl std::error::Error for Error {}
 #[derive(Clone)]
 pub struct Key([u8; KEY_LEN]);
 
-/// Stretches the pairing token into a session key. The salt is fresh per run,
-/// so a token reused across runs never produces the same key twice.
-pub fn derive_key(token: &str, salt_hex: &str) -> Result<Key, Error> {
+/// Which way the audio is going. The two directions must never share a key: the
+/// nonce is the SSRC and the sequence number, and one key across both would
+/// eventually pair the same two with opposite traffic, repeating a nonce — the
+/// one failure ChaCha20-Poly1305 does not survive.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Direction {
+    Downlink,
+    Uplink,
+}
+
+impl Direction {
+    fn label(self) -> &'static [u8] {
+        match self {
+            Direction::Downlink => b"ausha downlink",
+            Direction::Uplink => b"ausha uplink",
+        }
+    }
+}
+
+/// What the pairing token stretches into. Never used as a key itself — each
+/// direction takes its own from this.
+pub struct Secret([u8; KEY_LEN]);
+
+impl Secret {
+    /// Splitting is a single hash rather than a full HKDF because the secret is
+    /// already a uniformly random 256 bits; the label is only there so the two
+    /// directions cannot land on the same key.
+    pub fn key(&self, direction: Direction) -> Key {
+        let mut hash = Sha256::new();
+        hash.update(self.0);
+        hash.update(direction.label());
+        Key(hash.finalize().into())
+    }
+}
+
+/// Stretches the pairing token into a session secret. The salt is fresh per
+/// run, so a token reused across runs never produces the same keys twice.
+pub fn derive_secret(token: &str, salt_hex: &str) -> Result<Secret, Error> {
     let salt = decode_hex(salt_hex).ok_or(Error::BadSalt)?;
     if salt.len() != SALT_LEN {
         return Err(Error::BadSalt);
     }
-    let mut key = [0u8; KEY_LEN];
+    let mut secret = [0u8; KEY_LEN];
     pbkdf2::pbkdf2_hmac::<Sha256>(
         normalize_token(token).as_bytes(),
         &salt,
         KDF_ROUNDS,
-        &mut key,
+        &mut secret,
     );
-    Ok(Key(key))
+    Ok(Secret(secret))
 }
 
 /// Encrypts outgoing packets. Lives on the sender's fan-out thread.
@@ -193,8 +228,12 @@ mod tests {
         out
     }
 
+    fn key(token: &str, salt: &str) -> Key {
+        derive_secret(token, salt).unwrap().key(Direction::Downlink)
+    }
+
     fn pair() -> (Sealer, Opener) {
-        let key = derive_key(TOKEN, SALT).unwrap();
+        let key = key(TOKEN, SALT);
         (Sealer::new(&key), Opener::new(&key))
     }
 
@@ -214,16 +253,16 @@ mod tests {
     fn the_token_has_to_match() {
         let (mut sealer, _) = pair();
         let sealed = sealer.seal(&packet(1, b"audio")).unwrap();
-        let wrong = derive_key("c838-87a9-3b04", SALT).unwrap();
+        let wrong = key("c838-87a9-3b04", SALT);
         assert!(Opener::new(&wrong).open(&sealed).is_none());
     }
 
     #[test]
     fn the_salt_makes_every_run_distinct() {
-        let sealed = Sealer::new(&derive_key(TOKEN, SALT).unwrap())
+        let sealed = Sealer::new(&key(TOKEN, SALT))
             .seal(&packet(1, b"audio"))
             .unwrap();
-        let other = derive_key(TOKEN, "0f0e0d0c0b0a09080706050403020100").unwrap();
+        let other = key(TOKEN, "0f0e0d0c0b0a09080706050403020100");
         assert!(Opener::new(&other).open(&sealed).is_none());
     }
 
@@ -284,12 +323,36 @@ mod tests {
         assert!(opener.open(&next).is_some());
     }
 
+    /// The whole reason the directions are keyed apart: a downlink and an
+    /// uplink packet can carry the same SSRC and sequence, and under one key
+    /// that is a repeated nonce.
+    #[test]
+    fn the_two_directions_do_not_share_a_key() {
+        let secret = derive_secret(TOKEN, SALT).unwrap();
+        let plain = packet(1, b"audio");
+        let sealed = Sealer::new(&secret.key(Direction::Downlink))
+            .seal(&plain)
+            .unwrap();
+
+        assert!(
+            Opener::new(&secret.key(Direction::Uplink))
+                .open(&sealed)
+                .is_none(),
+            "the uplink key must not open a downlink packet"
+        );
+        assert!(
+            Opener::new(&secret.key(Direction::Downlink))
+                .open(&sealed)
+                .is_some()
+        );
+    }
+
     #[test]
     fn rejects_a_short_datagram_and_a_bad_salt() {
         let (mut sealer, mut opener) = pair();
         assert!(sealer.seal(&[0x80, 96, 0, 1]).is_none());
         assert!(opener.open(&[0x80, 96, 0, 1]).is_none());
-        assert!(matches!(derive_key(TOKEN, "abc"), Err(Error::BadSalt)));
-        assert!(matches!(derive_key(TOKEN, "zz"), Err(Error::BadSalt)));
+        assert!(matches!(derive_secret(TOKEN, "abc"), Err(Error::BadSalt)));
+        assert!(matches!(derive_secret(TOKEN, "zz"), Err(Error::BadSalt)));
     }
 }

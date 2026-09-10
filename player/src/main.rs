@@ -4,9 +4,12 @@ mod cli;
 mod control;
 mod ids;
 mod pairing;
+mod pipesource;
 mod registry;
 mod relay;
 mod sdp;
+mod shutdown;
+mod uplink;
 
 use std::io;
 use std::net::{Ipv4Addr, SocketAddr, TcpListener, UdpSocket};
@@ -27,26 +30,38 @@ fn main() {
         }
     };
 
-    if let Err(e) = run(cli) {
+    shutdown::listen();
+    let result = run(cli);
+    // The uplink's PulseAudio module is the one thing that outlives this
+    // process, and the session that owns it lives on a thread whose destructors
+    // a signal will not run.
+    pipesource::unload_all();
+
+    if let Err(e) = result {
         eprintln!("error: {e}");
         std::process::exit(1);
     }
 }
 
+/// What the uplink's capture device is called in everyone's input list.
+const MICROPHONE_NAME: &str = "ausha";
+
 fn run(cli: cli::Cli) -> io::Result<()> {
     let token = cli.token.clone().unwrap_or_else(ids::random_token);
     let ssrc = ids::random_ssrc();
-    let mut stream = StreamParams::new(ssrc);
-    if cli.encrypt {
-        stream.encryption = Some(Encryption {
-            cipher: crypto::CIPHER.to_string(),
-            salt: ids::random_salt(),
-        });
-    }
-    let mut sealer = stream
-        .key(&token)
-        .map_err(io::Error::other)?
-        .map(|key| Sealer::new(&key));
+    let stream = StreamParams::new(ssrc);
+    let encryption = cli.encrypt.then(|| Encryption {
+        cipher: crypto::CIPHER.to_string(),
+        salt: ids::random_salt(),
+    });
+    let secret = encryption
+        .as_ref()
+        .map(|encryption| encryption.secret(&token))
+        .transpose()
+        .map_err(io::Error::other)?;
+    let mut sealer = secret
+        .as_ref()
+        .map(|secret| Sealer::new(&secret.key(crypto::Direction::Downlink)));
     let registry = Arc::new(Registry::new());
 
     let media = Arc::new(UdpSocket::bind((Ipv4Addr::UNSPECIFIED, cli.media_port))?);
@@ -65,12 +80,22 @@ fn run(cli: cli::Cli) -> io::Result<()> {
         }
     }
 
+    // Bound once for the run, so the capture device is in everyone's input
+    // list whether or not a phone is connected right now.
+    let microphone = match cli.uplink {
+        true => Some(uplink::Listener::bind(cli.uplink_port, MICROPHONE_NAME)?),
+        false => None,
+    };
+
     let control = TcpListener::bind((Ipv4Addr::UNSPECIFIED, cli.control_port))?;
     let server = Arc::new(control::ControlServer {
         registry: registry.clone(),
         token: token.clone(),
         media_port: cli.media_port,
         stream: stream.clone(),
+        encryption: encryption.clone(),
+        secret,
+        uplink: microphone,
     });
     thread::spawn(move || control::serve(control, server));
     thread::spawn({
@@ -109,12 +134,14 @@ fn pump(
     encoder: &mut capture::Encoder,
     mut sealer: Option<&mut Sealer>,
 ) -> io::Result<()> {
-    loop {
+    while !shutdown::requested() {
         relay::forward(ingest, media, registry, sealer.as_deref_mut())?;
         if let Some(status) = encoder.exit_status()? {
             return Err(io::Error::other(format!("ffmpeg exited: {status}")));
         }
     }
+    println!("stopping");
+    Ok(())
 }
 
 /// Spawns the MPEG-TS fan-out and returns the loopback address ffmpeg should
@@ -165,6 +192,12 @@ fn announce(cli: &cli::Cli, token: &str, ssrc: u32) {
             String::new()
         }
     );
+    if cli.uplink {
+        println!(
+            "uplink:  udp/{} — one receiver's microphone, as capture device \"{}\"",
+            cli.uplink_port, MICROPHONE_NAME
+        );
+    }
     println!("pairing: {}", ids::format_token(token));
 
     let Some(address) = advertise::best_local_address() else {

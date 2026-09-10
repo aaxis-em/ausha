@@ -724,26 +724,77 @@ hundred milliseconds and puts that out of reach.
 
 **Phase 5 — iOS**
 
-**Phase 6 — Duplex / call mode** — designed in §6, not started
+**Phase 6 — Duplex / call mode — BUILT, ECHO UNVERIFIED**
 
-Ordering against Phase 5 is a priority call, not a dependency: nothing here
-needs iOS, and nothing in iOS needs this.
+Designed in §6. Everything is in place and the transport is verified end to
+end; the one thing that cannot be checked here is the thing §6.6 named as the
+risk, because an emulator has no acoustic path between its speaker and its
+microphone.
 
-- [ ] `ausha-core`: `encode.rs`, `rtp::Builder`, the `Voice` latency preset
-- [ ] Protocol: `uplink` in `hello` and `accept`, a separate uplink key, and
-      address-based demultiplexing in the registry
-- [ ] Sender: uplink socket, one `Pipeline` per uplink, and the
+- [x] `ausha-core`: `encode.rs`, `rtp::Builder`, the `Voice` latency preset
+- [x] Protocol: `uplink` in `hello` and `accept`, a separate uplink key, and
+      per-session demultiplexing
+- [x] Sender: `--uplink`, one `Pipeline` per uplink, and the
       `module-pipe-source` lifecycle tied to the session
-- [ ] Android: `AudioRecord` on the communication path with platform AEC, the
-      call-mode switch, `RECORD_AUDIO`, and the microphone service type
-- [ ] *Verify:* a real call with the phone on speaker and the far end
-      confirming no echo; round-trip measured rather than estimated; and
-      `scripts/soak.sh` extended to drive an uplink
+- [x] Android: `AudioRecord` on the communication path with the platform
+      effects, the call-mode switch, `RECORD_AUDIO`, the microphone service
+      type
+- [x] `scripts/soak.sh -u`, and `ausha-recv --uplink-tone` to drive an uplink
+      without a phone
+- [ ] **A real call with the phone on speaker, the far end confirming no echo.**
+      Needs hardware. Until then call mode is only safe with headphones on the
+      phone.
 
-The risk to retire first is 6.6 — whether platform AEC actually cancels our
-downlink cleanly on real hardware. That is one Android spike against a laptop
-playing a recording, and it decides whether the rest is worth building. Do it
-before the protocol work, not after.
+*Verified:* a 440 Hz tone sent up by `ausha-recv` came out of the sender's
+`ausha` capture device at 440 Hz and 0.354 full scale — exactly 0.5/√2 for the
+0.5-amplitude sine that went in — plaintext and encrypted alike. Ninety seconds
+held 40–80 ms of depth against a 40 ms target with no loss and no underruns. On
+an emulator, call mode negotiated the uplink, sent 50 packets a second at 0.00%
+loss with 0 underruns, and the sender handed the microphone from one client to
+the next as each disconnected.
+
+Five things this phase found:
+
+1. **A PulseAudio module outlives the process that loaded it.** `Drop` covers a
+   session ending, but the sender is normally stopped with a signal, which
+   unwinds nothing — and the session that owns the microphone lives on a thread
+   whose destructors a signal will not run either. Killing the sender left a
+   phantom capture device in everyone's input list. There is now a signal
+   handler, a process-level unload, and a sweep for one left by an earlier run.
+2. **`Interrupted` is not an error.** With a signal handler installed, the
+   blocked `recv_from` in the fan-out started returning `EINTR`, which the pump
+   reported as a failure. It belongs with the timeouts: it is the wakeup that
+   lets the loop notice the shutdown it was told about.
+3. **The pipe has to be written non-blocking.** Nothing recording from the
+   source lets the pipe back up, and a blocking write there would stall the
+   uplink for as long as nobody was listening. A frame is well under `PIPE_BUF`,
+   so a non-blocking write is all-or-nothing and a dropped frame cannot shift
+   every sample after it.
+4. **The uplink needs its own clock.** Every other pipeline in this project is
+   paced by an audio device; a pipe accepts whatever it is given as fast as it
+   is given. The frame rate is metered out against the sample count, the way
+   `sink::Null` does it, rather than against a timer that would drift.
+5. **A capture device must not come and go with the call.** §6.1 tied the
+   PulseAudio module to the session, which is tidy and wrong: an application
+   that had already selected the device did not cope with it vanishing. Tested
+   by pulling the client mid-recording, the recorder silently fell back to the
+   laptop's own microphone — worse than silence, because nobody notices they
+   are now broadcasting the room. The device is published for the sender's run
+   and is simply silent when unclaimed.
+
+Three deviations from §6:
+
+- **Demultiplexed by SSRC, not by source address.** The sender assigns the
+  uplink SSRC, it is in the clear in the header, and it survives a NAT
+  rebinding mid-call that the source address would not — which is exactly when
+  the failure would be noticed.
+- **The capture device outlives the session** rather than being loaded and
+  unloaded with it, for the reason in finding 5.
+- **A client refused the microphone is still accepted, as a listener**, rather
+  than being sent an `error` that would end the session. §6.4 said listeners
+  stay unlimited, and dropping someone's audio because another device is on a
+  call is the worse trade. The sender logs the refusal and the app can see that
+  `uplink` was absent.
 
 ---
 
@@ -755,11 +806,11 @@ before the protocol work, not after.
    dropped and only drift control is needed. This changes Phase 1's scope.
 2. **How many simultaneous listeners?** Under ~8 the unicast decision in 2.3
    holds unconditionally. Above that, revisit.
-3. ~~**Does the phone ever need to send audio back?**~~ **Answered: yes** —
-   using the phone as a headset for a call taken on the laptop. Designed in
-   §6, which extends 2.4's handshake compatibly rather than bumping the
-   version. The open part is no longer whether, but whether the 16 kHz
-   downlink that platform AEC imposes (6.6) is an acceptable trade.
+3. ~~**Does the phone ever need to send audio back?**~~ **Answered and built** —
+   the phone is a headset for a call taken on the laptop. Designed in §6, built
+   in Phase 6. What is still open is whether the platform echo canceller holds
+   up on real hardware (6.6), and whether the fidelity it costs is a trade
+   people accept.
 4. **Minimum Android API?** API 26 covers ~95% of devices and gives
    `PERFORMANCE_MODE_LOW_LATENCY` and float PCM. API 29 is needed for
    `WIFI_MODE_FULL_LOW_LATENCY`, which we can feature-detect.

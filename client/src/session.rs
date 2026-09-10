@@ -6,7 +6,7 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use ausha_core::config;
 use ausha_core::lines::{Incoming, LineReader};
-use ausha_core::protocol::{ClientMessage, ServerMessage, StreamParams};
+use ausha_core::protocol::{ClientMessage, Encryption, ServerMessage, StreamParams, UplinkParams};
 
 /// Short enough that shutdown is prompt, since a blocked read is what the
 /// control thread spends its life in.
@@ -16,12 +16,20 @@ pub struct Session {
     reader: LineReader<TcpStream>,
     stream: TcpStream,
     pub params: StreamParams,
+    pub uplink: Option<UplinkParams>,
+    pub encryption: Option<Encryption>,
     pub media: UdpSocket,
     pub offset_us: Option<i64>,
 }
 
 /// Runs the handshake and returns a session already receiving media.
-pub fn connect(host: &str, port: u16, token: &str, name: &str) -> io::Result<Session> {
+pub fn connect(
+    host: &str,
+    port: u16,
+    token: &str,
+    name: &str,
+    want_uplink: bool,
+) -> io::Result<Session> {
     let control = TcpStream::connect((host, port))?;
     control.set_nodelay(true)?;
     control.set_read_timeout(Some(POLL_TIMEOUT))?;
@@ -34,15 +42,18 @@ pub fn connect(host: &str, port: u16, token: &str, name: &str) -> io::Result<Ses
             ver: config::PROTOCOL_VERSION,
             name: name.to_string(),
             token: token.to_string(),
+            uplink: want_uplink,
         },
     )?;
 
-    let (session, media_port, params) = match expect(&mut reader)? {
+    let (session, media_port, params, uplink, encryption) = match expect(&mut reader)? {
         ServerMessage::Accept {
             session,
             media_port,
             stream,
-        } => (session, media_port, stream),
+            uplink,
+            encryption,
+        } => (session, media_port, stream, uplink, encryption),
         ServerMessage::Error { reason } => {
             return Err(io::Error::other(format!("rejected: {reason}")));
         }
@@ -68,6 +79,8 @@ pub fn connect(host: &str, port: u16, token: &str, name: &str) -> io::Result<Ses
         reader,
         stream,
         params,
+        uplink,
+        encryption,
         media,
         offset_us: None,
     })

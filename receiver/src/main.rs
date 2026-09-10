@@ -30,6 +30,7 @@ fn run(cli: cli::Cli) -> io::Result<()> {
         name: cli.name,
         simulate_loss: cli.simulate_loss,
         latency: cli.latency,
+        uplink: cli.uplink_tone,
     })?;
 
     let params = client.params().clone();
@@ -44,6 +45,21 @@ fn run(cli: cli::Cli) -> io::Result<()> {
         None => Box::new(sink::Process::detect(cli.sink_latency_ms)?),
     };
 
+    let mut tone = match client.uplink() {
+        Some(uplink) => {
+            println!(
+                "uplink: sending a 440 Hz tone, {} samples a frame",
+                uplink.frame_len()
+            );
+            Some(Tone::new(uplink.frame_len(), params.rate))
+        }
+        None if cli.uplink_tone => {
+            eprintln!("uplink: the sender did not offer one; is it running with --uplink?");
+            None
+        }
+        None => None,
+    };
+
     let chunk_frames = (params.rate / 1000 * params.ptime_ms) as usize;
     let mut chunk = vec![0.0f32; chunk_frames * usize::from(params.channels)];
 
@@ -54,6 +70,14 @@ fn run(cli: cli::Cli) -> io::Result<()> {
     while client.is_running() {
         client.fill(&mut chunk);
         sink.write(&chunk)?;
+
+        // The sink has just paced this iteration to one frame of real time,
+        // and an uplink frame is the same 20 ms, so it paces the tone too.
+        if let Some(tone) = &mut tone
+            && let Some(uplink) = client.uplink()
+        {
+            uplink.send(tone.next_frame())?;
+        }
 
         if last_report.elapsed() >= Duration::from_secs(5) {
             report(&client.stats(), started.elapsed());
@@ -68,6 +92,36 @@ fn run(cli: cli::Cli) -> io::Result<()> {
     drop(client);
     summarise(&stats, started.elapsed());
     Ok(())
+}
+
+/// A 440 Hz sine, so that what comes out of the sender's virtual microphone is
+/// recognisable by ear and by a spectrum plot.
+struct Tone {
+    samples: Vec<f32>,
+    rate: u32,
+    phase: u32,
+}
+
+impl Tone {
+    const HZ: f32 = 440.0;
+
+    fn new(frame_len: usize, rate: u32) -> Self {
+        Self {
+            samples: vec![0.0; frame_len],
+            rate,
+            phase: 0,
+        }
+    }
+
+    fn next_frame(&mut self) -> &[f32] {
+        for sample in self.samples.iter_mut() {
+            let t = self.phase as f32 / self.rate as f32;
+            *sample = (t * Self::HZ * std::f32::consts::TAU).sin() * 0.5;
+            // Wrapping on a whole second keeps the phase continuous.
+            self.phase = (self.phase + 1) % self.rate;
+        }
+        &self.samples
+    }
 }
 
 fn report(stats: &Stats, elapsed: Duration) {

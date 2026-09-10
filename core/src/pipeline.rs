@@ -54,6 +54,10 @@ pub enum Latency {
     Low,
     Balanced,
     Stable,
+    /// Call mode, both directions. Tighter than `Low` because a conversation
+    /// notices delay more readily than it notices a concealed frame — the
+    /// opposite trade to music.
+    Voice,
 }
 
 impl Latency {
@@ -62,6 +66,7 @@ impl Latency {
             Latency::Low => (40, 120),
             Latency::Balanced => (config::JITTER_MIN_MS, config::JITTER_MAX_MS),
             Latency::Stable => (160, 400),
+            Latency::Voice => (40, 100),
         }
     }
 
@@ -70,6 +75,7 @@ impl Latency {
             "low" => Some(Latency::Low),
             "balanced" => Some(Latency::Balanced),
             "stable" => Some(Latency::Stable),
+            "voice" => Some(Latency::Voice),
             _ => None,
         }
     }
