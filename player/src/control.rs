@@ -10,14 +10,22 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use crate::ids;
 use crate::registry::{Registry, SessionId};
 use ausha_core::config;
+use ausha_core::crypto::Secret;
 use ausha_core::lines::{Incoming, LineReader};
-use ausha_core::protocol::{self, ClientMessage, ServerMessage, StreamParams};
+use ausha_core::protocol::{
+    self, ClientMessage, Encryption, ServerMessage, StreamParams, UplinkParams,
+};
+
+use crate::uplink;
 
 pub struct ControlServer {
     pub registry: Arc<Registry>,
     pub token: String,
     pub media_port: u16,
     pub stream: StreamParams,
+    pub encryption: Option<Encryption>,
+    pub secret: Option<Secret>,
+    pub uplink: Option<uplink::Listener>,
 }
 
 pub fn serve(listener: TcpListener, server: Arc<ControlServer>) {
@@ -52,7 +60,13 @@ fn handle(stream: TcpStream, server: &ControlServer) -> io::Result<()> {
         None => return Ok(()),
     };
 
-    let ClientMessage::Hello { ver, name, token } = hello else {
+    let ClientMessage::Hello {
+        ver,
+        name,
+        token,
+        uplink,
+    } = hello
+    else {
         return reject(&mut writer, "expected hello");
     };
     if ver != config::PROTOCOL_VERSION {
@@ -70,7 +84,7 @@ fn handle(stream: TcpStream, server: &ControlServer) -> io::Result<()> {
     }
 
     let (id, punch) = server.registry.open(name.clone());
-    let result = run_session(&mut reader, &mut writer, server, id, punch, &name);
+    let result = run_session(&mut reader, &mut writer, server, id, punch, &name, uplink);
     server.registry.close(id);
     println!("control: {name} ({peer}) disconnected");
     result
@@ -96,13 +110,26 @@ fn run_session(
     id: SessionId,
     punch: Receiver<SocketAddr>,
     name: &str,
+    wants_uplink: bool,
 ) -> io::Result<()> {
+    // Held for the life of the session: dropping it stops the thread and takes
+    // the microphone back out of the desktop's device list.
+    let (uplink, _microphone) = match open_uplink(server, id, name, wants_uplink) {
+        Ok(opened) => opened,
+        Err(e) => {
+            eprintln!("uplink: {name} could not have the microphone: {e}");
+            (None, None)
+        }
+    };
+
     send(
         writer,
         &ServerMessage::Accept {
             session: format!("{id:016x}"),
             media_port: server.media_port,
             stream: server.stream.clone(),
+            uplink,
+            encryption: server.encryption.clone(),
         },
     )?;
 
@@ -135,6 +162,33 @@ fn run_session(
             last_ping = Instant::now();
         }
     }
+}
+
+/// Grants the microphone if the client asked, the sender offers one, and no
+/// other session already holds it.
+///
+/// A client that cannot have it is still accepted, as a listener: refusing the
+/// whole session because somebody else is on a call would be a worse trade than
+/// letting them listen.
+type Granted = (Option<UplinkParams>, Option<uplink::Active>);
+
+fn open_uplink(
+    server: &ControlServer,
+    id: SessionId,
+    name: &str,
+    wants_uplink: bool,
+) -> io::Result<Granted> {
+    let Some(listener) = server.uplink.as_ref().filter(|_| wants_uplink) else {
+        return Ok((None, None));
+    };
+    if !server.registry.claim_uplink(id) {
+        return Err(io::Error::other("another receiver already holds it"));
+    }
+
+    let params = UplinkParams::new(listener.port(), ids::random_ssrc());
+    let microphone = listener.claim(&params, server.secret.as_ref())?;
+    println!("uplink: {name} has the microphone, on udp/{}", params.port);
+    Ok((Some(params), Some(microphone)))
 }
 
 fn decode(line: &str) -> io::Result<ClientMessage> {

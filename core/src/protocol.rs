@@ -11,6 +11,10 @@ pub enum ClientMessage {
         ver: u16,
         name: String,
         token: String,
+        /// Asks for a microphone channel back to the sender. Absent from an
+        /// older client, which is then simply a listener.
+        #[serde(default)]
+        uplink: bool,
     },
     Pong {
         ts: u64,
@@ -30,6 +34,14 @@ pub enum ServerMessage {
         session: String,
         media_port: u16,
         stream: StreamParams,
+        /// Present only when the client asked and the sender was started with
+        /// `--uplink`. Its absence leaves the client a listener.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        uplink: Option<UplinkParams>,
+        /// Covers the session, not one direction: if the downlink is
+        /// encrypted so is the uplink.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        encryption: Option<Encryption>,
     },
     Ready,
     Ping {
@@ -49,10 +61,31 @@ pub struct StreamParams {
     pub payload_type: u8,
     pub ssrc: u32,
     pub fec: bool,
-    /// Absent on a plaintext stream, which is what a sender without
-    /// `--encrypt` produces and what `ffplay` can still play.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub encryption: Option<Encryption>,
+}
+
+/// Where the client sends its microphone, and how it should encode it. The
+/// stream description is a plain [`StreamParams`] so that the sender can run
+/// the same [`Pipeline`](crate::pipeline::Pipeline) on it that the client runs
+/// on the downlink.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct UplinkParams {
+    pub port: u16,
+    pub bitrate: u32,
+    pub stream: StreamParams,
+}
+
+impl UplinkParams {
+    pub fn new(port: u16, ssrc: u32) -> Self {
+        Self {
+            port,
+            bitrate: config::UPLINK_BITRATE,
+            stream: StreamParams {
+                channels: config::UPLINK_CHANNELS,
+                payload_type: config::UPLINK_PAYLOAD_TYPE,
+                ..StreamParams::new(ssrc)
+            },
+        }
+    }
 }
 
 /// How the media path is protected, named by the sender in `accept` so the
@@ -74,20 +107,18 @@ impl StreamParams {
             payload_type: config::RTP_PAYLOAD_TYPE,
             ssrc,
             fec: true,
-            encryption: None,
         }
     }
+}
 
-    /// Derives the session key this stream's `accept` describes, or `None` when
-    /// the sender is not encrypting.
-    pub fn key(&self, token: &str) -> Result<Option<crypto::Key>, crypto::Error> {
-        let Some(encryption) = &self.encryption else {
-            return Ok(None);
-        };
-        if encryption.cipher != crypto::CIPHER {
-            return Err(crypto::Error::UnknownCipher(encryption.cipher.clone()));
+impl Encryption {
+    /// Derives the session secret this `accept` describes. Each direction takes
+    /// its own key from it.
+    pub fn secret(&self, token: &str) -> Result<crypto::Secret, crypto::Error> {
+        if self.cipher != crypto::CIPHER {
+            return Err(crypto::Error::UnknownCipher(self.cipher.clone()));
         }
-        crypto::derive_key(token, &encryption.salt).map(Some)
+        crypto::derive_secret(token, &self.salt)
     }
 }
 

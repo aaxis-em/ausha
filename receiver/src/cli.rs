@@ -12,6 +12,7 @@ pub struct Cli {
     pub run_for_secs: Option<u64>,
     pub simulate_loss: u32,
     pub latency: Latency,
+    pub uplink_tone: bool,
 }
 
 pub const USAGE: &str = "\
@@ -27,8 +28,10 @@ Options:
   --sink <program>        pacat, aplay, ffplay, or null (default: first found)
   --sink-latency <ms>     Requested device latency (default 20)
   --run-for <seconds>     Exit after this long, for soak testing
-  --latency <preset>      low, balanced or stable (default balanced). Deeper
-                          buffering survives worse networks but adds delay
+  --latency <preset>      low, balanced, stable or voice (default balanced).
+                          Deeper buffering survives worse networks but adds delay
+  --uplink-tone           Send a 440 Hz tone up the microphone channel, to check
+                          a sender's --uplink virtual microphone without a phone
   --simulate-loss <pct>   Drop this percentage of received packets, to exercise
                           concealment against a real sender
   -h, --help              Show this message
@@ -45,6 +48,7 @@ pub fn parse() -> Result<Cli, String> {
         run_for_secs: None,
         simulate_loss: 0,
         latency: Latency::Balanced,
+        uplink_tone: false,
     };
     let mut args = std::env::args().skip(1);
 
@@ -66,10 +70,11 @@ pub fn parse() -> Result<Cli, String> {
             "--sink-latency" => cli.sink_latency_ms = parse_with(&flag, &value()?)?,
             "--run-for" => cli.run_for_secs = Some(parse_with(&flag, &value()?)?),
             "--simulate-loss" => cli.simulate_loss = parse_with(&flag, &value()?)?,
+            "--uplink-tone" => cli.uplink_tone = true,
             "--latency" => {
                 let name = value()?;
                 cli.latency = Latency::parse(&name).ok_or_else(|| {
-                    format!("--latency: expected low, balanced or stable, got {name:?}")
+                    format!("--latency: expected low, balanced, stable or voice, got {name:?}")
                 })?;
             }
             other => return Err(format!("unknown argument: {other}")),

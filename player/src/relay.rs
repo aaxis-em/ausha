@@ -95,9 +95,12 @@ fn receive<'a>(ingest: &UdpSocket, buf: &'a mut [u8]) -> io::Result<Option<&'a [
     Ok(from.ip().is_loopback().then_some(&buf[..n]))
 }
 
+/// `Interrupted` belongs here rather than being an error: it is what a blocked
+/// `recv_from` returns when a signal arrives, and the caller's next loop is
+/// where the shutdown that signal asked for gets noticed.
 fn is_timeout(e: &io::Error) -> bool {
     matches!(
         e.kind(),
-        io::ErrorKind::WouldBlock | io::ErrorKind::TimedOut
+        io::ErrorKind::WouldBlock | io::ErrorKind::TimedOut | io::ErrorKind::Interrupted
     )
 }

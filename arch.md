@@ -158,6 +158,9 @@ All under `player/src/`.
 | `capture/source.rs` | Finds the platform's loopback audio device |
 | `capture/dshow.rs` | Reads ffmpeg's DirectShow device list on Windows |
 | `capture/lifetime.rs` | Ties ffmpeg's lifetime to the sender's, per platform |
+| `uplink.rs` | Receives a client's microphone and decodes it at real time |
+| `pipesource.rs` | Publishes that as a PulseAudio capture device |
+| `shutdown.rs` | Turns SIGINT and SIGTERM into a flag the main loop acts on |
 | `control.rs` | TCP control server: handshake, auth, keepalive |
 | `protocol.rs` | Control message types |
 | `lines.rs` | Newline framing that tolerates read timeouts |
@@ -174,6 +177,7 @@ All under `player/src/`.
 | control accept | Accepts TCP connections, spawns one thread per session |
 | control session (per receiver) | Handshake, then keepalive until disconnect |
 | punch listener | Reads the media socket, records receiver addresses |
+| uplink (only with `--uplink`, while a client holds it) | Decodes the microphone and meters it into the pipe |
 | compat fan-out (only with `--compat-ts`) | Forwards MPEG-TS to fixed targets |
 
 Shared state is one `Registry` behind a `Mutex`. The fan-out holds that lock
@@ -426,6 +430,35 @@ more than it saves.
 - **Bluetooth adds 100–200 ms** the app cannot control. Wired output is the
   only way to hit the latency figures above.
 
+### Call mode
+
+Call mode is a mode, not a setting. The echo that would otherwise make this
+unusable — we play the far end, the speaker feeds it into the microphone, the
+far end hears itself — is cancelled by the platform, but only on the
+communication audio path: `MODE_IN_COMMUNICATION`, capture from
+`VOICE_COMMUNICATION`, playback with `USAGE_VOICE_COMMUNICATION`. The canceller
+references whatever the device is playing, and there our downlink *is* what the
+device is playing, so the reference signal is exactly what needs removing. That
+is the hard part of echo cancellation, and the platform hands it over.
+
+It is paid for in fidelity: that path does not honour
+`PERFORMANCE_MODE_LOW_LATENCY` and commonly runs at 16 kHz. So turning call
+mode on tears down and rebuilds `AudioTrack`, and both directions move to the
+`Voice` buffer depth, which is tighter than any listening preset because a
+conversation notices delay more readily than a concealed frame.
+
+The microphone thread lives inside `AudioEngine` rather than beside it, because
+the native handle does: anything touching the handle has to be gone before it
+is freed, and one owner makes that orderable. Pausing from the lock screen
+stops the microphone with everything else, which matters more than it sounds —
+a paused call still transmitting the room is a privacy bug.
+
+`RECORD_AUDIO` is asked for when call mode is switched on, not at startup, and
+the service adds the `microphone` foreground type only while it holds the
+permission, which API 30 requires before `startForeground` rather than merely
+declared. A microphone foreground service also cannot be started from the
+background on API 31+, which is why a pairing link never turns call mode on.
+
 ### Transport controls
 
 `Transport` owns a `MediaSessionCompat`; the notification is a `MediaStyle`
@@ -448,7 +481,7 @@ playing out loud.
 
 The sender advertises `_ausha._tcp` with TXT records for version, codec, rate,
 channels and bitrate, and prints `ausha://host:port?token=…` — as a link, and
-as a QR code with `--qr`. The app finds senders with `NsdManager`, and accepts
+as a QR code unless `--no-qr` says otherwise. The app finds senders with `NsdManager`, and accepts
 the same link from a scan or an opened URL.
 
 Discovery is always a convenience, never the only way in: mDNS is blocked
@@ -461,7 +494,77 @@ sending machine and useless to a phone.
 
 ---
 
-## 8. Capture
+## 8. Duplex: the phone as a microphone
+
+`--uplink` turns the sender into a capture device as well as a source, so a
+call taken on the desktop can be spoken into from the phone. The downlink
+already carries the call's audio to the phone — it comes out of the default
+sink like anything else — so this is the other half.
+
+```
+phone microphone
+   │  AudioRecord, VOICE_COMMUNICATION, mono 48 kHz
+   ↓
+encode::Encoder      Opus voip, 32 kbps, 20 ms, in-band FEC
+   ↓
+rtp::Builder         payload type 97, the sender's per-session SSRC
+   ↓
+crypto::Sealer       with --encrypt, under the uplink's own key
+   ↓  UDP to the sender's uplink port
+pipeline::Pipeline   the same jitter buffer, FEC and concealment, at Voice depth
+   ↓
+pipesource           s16le into a FIFO, metered out at real time
+   ↓
+module-pipe-source   a capture device named "ausha"
+```
+
+The receive half is the pipeline the phone already runs on the downlink, in the
+other direction: it never knew which way the audio was going.
+
+**One at a time.** Two phones feeding one microphone would need mixing and a
+policy for whose voice wins. The second client is still accepted — as a
+listener — because dropping someone's audio for that would be the worse trade.
+
+**Demultiplexed by SSRC.** The sender assigns it per session and it rides in the
+clear in the header, so it survives a NAT rebinding mid-call that a source
+address would not.
+
+**The device lives as long as the sender, not as long as the call.** Tying it
+to the session looked tidier and was wrong: a call application that has already
+selected it does not cope with it disappearing. When the phone dropped
+mid-call the application silently fell back to the laptop's own microphone,
+which is worse than silence because nobody notices. So `--uplink` publishes the
+device at startup and it stays; a session claiming it only decides what comes
+out. Idle, it produces silence — a muted microphone, which is what it is.
+
+That leaves the module outliving the process that loaded it, and two things
+handle it:
+
+- A signal unwinds nothing, so `shutdown.rs` turns SIGINT and SIGTERM into a
+  flag and `main` unloads whatever is still registered on the way out. Without
+  it, killing the sender left a capture device in everyone's input list that
+  nothing would remove.
+- A run that was killed harder than that is swept up at the next start, by
+  matching the pipe the stale module owns.
+
+**The pipe is written non-blocking.** Nothing recording from the source lets it
+back up, and blocking there would stall the uplink for as long as nobody was
+listening. A frame is well under `PIPE_BUF`, so the write is all-or-nothing and
+a dropped frame cannot shift every sample after it. The sender says so when it
+starts discarding, because a working uplink that nobody selected looks
+identical to a broken one.
+
+**It needs its own clock.** Every other pipeline here is paced by an audio
+device; a pipe takes whatever it is given as fast as it is given. Frames are
+metered against the sample count rather than a timer, so a slow iteration is
+made up instead of accumulating.
+
+**Windows has no equivalent**, so this is Linux-only until someone wires up a
+virtual cable driver.
+
+---
+
+## 9. Capture
 
 `capture/source.rs` asks PulseAudio for the default sink and appends
 `.monitor`, which is the canonical way to capture what the desktop is playing.
@@ -537,7 +640,7 @@ long as it owns the child.
 
 ---
 
-## 9. Security
+## 10. Security
 
 The pairing token is a 48-bit random value, displayed grouped as
 `xxxx-xxxx-xxxx`, generated fresh per run unless `--token` fixes it. A receiver
@@ -570,6 +673,11 @@ things drive that:
   GPU-hours to brute force against a captured stream. At 200k rounds that is
   out of reach, and it costs one handshake a couple of hundred milliseconds.
 
+Each direction takes its own key from that secret, split with a one-shot hash
+over a direction label. They must not share one: the nonce is the SSRC and the
+sequence number, and a downlink and an uplink packet can carry the same pair,
+which under one key is a repeated nonce.
+
 The nonce is the SSRC and the *extended* sequence number, which never repeat
 within a session. The 16-bit sequence alone would not do: it wraps every 22
 minutes at 50 packets per second, and a repeated nonce under one key is the one
@@ -590,9 +698,12 @@ eavesdropper, which is the realistic threat on a shared network.
 `--compat-ts` is never encrypted; it exists so that players with no pairing
 step can receive the stream, and it skips the token as well.
 
+`--encrypt` covers the session, so an uplink is encrypted whenever the downlink
+is.
+
 ---
 
-## 10. Running it
+## 11. Running it
 
 ```bash
 cd player
@@ -622,17 +733,37 @@ Useful flags: `--sink null` to run headless, `--run-for <seconds>` to bound a
 soak, and `--simulate-loss <pct>` to drop received packets and exercise
 concealment against a real sender.
 
+### Using the phone as a microphone
+
+```bash
+cargo run --release --bin ausha -- --uplink
+```
+
+The **ausha** input appears straight away and stays for as long as the sender
+runs, so it can be selected in the call application before the phone is
+anywhere near it. Switch call mode on in the app to start talking through it.
+To check the path without a phone:
+
+```bash
+cargo run --release --bin ausha-recv -- --host <ip> --token <token> \
+    --sink null --uplink-tone
+parecord --device=ausha --format=s16le --rate=48000 --channels=1 tone.wav
+```
+
+A 440 Hz tone in `tone.wav` means every link between the two works.
+
 ### Soaking several receivers at once
 
 ```bash
-./scripts/soak.sh -n 8 -d 240 -l 3 -e
+./scripts/soak.sh -n 8 -d 240 -l 3 -e -u
 ```
 
 Starts a sender and N receivers against it, then fails if any of them saw an
 underrun or a silent frame — the two things a listener actually hears. Loss on
 its own is not a failure; absorbing it is the receiver's job. The script also
 prints the spread in packet counts across receivers, which is how a fan-out
-that served one receiver better than another would show up.
+that served one receiver better than another would show up. `-u` adds an
+uplink, which also exercises the second receiver being refused the microphone.
 
 This is the one test that needs a network. The core's own tests inject loss,
 reordering and jitter headlessly; what they cannot exercise is one encoder, one
@@ -640,7 +771,7 @@ fan-out and one registry serving several sessions at once over a real socket.
 
 ---
 
-## 11. Known limitations
+## 12. Known limitations
 
 - **The Windows sender is untested.** The code is there and type-checks for
   `x86_64-pc-windows-*`, but it has never been run on Windows: no machine to
@@ -649,13 +780,19 @@ fan-out and one registry serving several sessions at once over a real socket.
 - **`--compat-ts` is unauthenticated.** It skips the handshake entirely, so it
   skips pairing, and `--encrypt` does not apply to it. Use it only on a trusted
   network.
-- **Encryption is opt-in and one-directional.** See §9: `--encrypt` closes the
+- **Encryption is opt-in and one-directional.** See §10: `--encrypt` closes the
   passive eavesdropper, not an active attacker in the path.
 - **No RTCP.** Receiver reports would give the sender real loss and jitter
   figures; today it learns them only from the control channel `stats` message,
   which nothing sends yet.
 - **`player/` holds the sender, not the player.** The directory name predates
   the split between sender and receiver and is worth renaming.
+- **Call mode's echo cancellation is unverified.** The code is there and the
+  transport is proven, but whether the platform canceller actually removes our
+  downlink has never been tried on hardware with a real acoustic path. Until it
+  is, treat call mode as safe with headphones on the phone and unproven on
+  speaker.
+- **The uplink is Linux-only**, for want of a virtual capture device elsewhere.
 - **No iOS app.** `ausha-core` and `ausha-client` are ready for it; only the
   audio sink and a Swift bridge remain.
 - **The clock offset is estimated but unused.** `Session::offset_us` tracks it
