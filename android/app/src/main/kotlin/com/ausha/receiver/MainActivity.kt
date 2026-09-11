@@ -68,21 +68,41 @@ fun AushaApp(links: MutableStateFlow<Pairing?>) {
         rememberPermissionState(Manifest.permission.POST_NOTIFICATIONS)
     } else null
     val camera = rememberPermissionState(Manifest.permission.CAMERA)
-    val microphone = rememberPermissionState(Manifest.permission.RECORD_AUDIO)
+    val connected = state == AudioEngine.State.Playing || state == AudioEngine.State.Connecting
 
-    // A pairing link carries everything needed, so acting on it immediately is
-    // the point: scanning a code should start playback, not fill in a form.
+    fun connect(withCallMode: Boolean) = PlaybackService.start(
+        context,
+        host.trim(),
+        port.toIntOrNull() ?: Pairing.DEFAULT_PORT,
+        token.trim(),
+        Build.MODEL,
+        latency,
+        withCallMode,
+    )
+
+    // A pairing carries everything needed, so acting on it immediately is the
+    // point: scanning a code should start playback, not fill in a form.
+    fun pair(pairing: Pairing, withCallMode: Boolean) {
+        host = pairing.host
+        port = pairing.port.toString()
+        token = pairing.token
+        scanning = false
+        connect(withCallMode)
+    }
+
+    // Call mode is agreed in the handshake, so changing it mid-session means
+    // reconnecting, and only once the microphone can actually be used.
+    val microphone = rememberPermissionState(Manifest.permission.RECORD_AUDIO) { granted ->
+        if (granted && callMode && connected) connect(withCallMode = true)
+    }
+
     LaunchedEffect(link) {
         link?.let {
-            host = it.host
-            port = it.port.toString()
-            token = it.token
-            scanning = false
             links.value = null
-            // A link never turns the microphone on: a microphone foreground
-            // service cannot be started from the background, and switching it
-            // on is a decision worth making deliberately anyway.
-            PlaybackService.start(context, it.host, it.port, it.token, Build.MODEL, latency)
+            // A link from outside the app never turns the microphone on: it
+            // can arrive while the app is in the background, where a microphone
+            // foreground service cannot be started.
+            pair(it, withCallMode = false)
         }
     }
 
@@ -98,7 +118,7 @@ fun AushaApp(links: MutableStateFlow<Pairing?>) {
         Scaffold { padding ->
             Column(Modifier.padding(padding).fillMaxSize()) {
                 if (camera.status.isGranted) {
-                    QrScanner(Modifier.weight(1f)) { links.value = it }
+                    QrScanner(Modifier.weight(1f)) { pair(it, withCallMode = callMode) }
                 } else {
                     LaunchedEffect(Unit) { camera.launchPermissionRequest() }
                     Box(Modifier.weight(1f), Alignment.Center) {
@@ -206,25 +226,17 @@ fun AushaApp(links: MutableStateFlow<Pairing?>) {
                 granted = microphone.status.isGranted,
                 onChange = { wanted ->
                     callMode = wanted
-                    if (wanted && !microphone.status.isGranted) {
-                        microphone.launchPermissionRequest()
+                    when {
+                        wanted && !microphone.status.isGranted ->
+                            microphone.launchPermissionRequest()
+                        connected -> connect(withCallMode = wanted)
                     }
                 },
             )
 
             Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
                 Button(
-                    onClick = {
-                        PlaybackService.start(
-                            context,
-                            host.trim(),
-                            port.toIntOrNull() ?: Pairing.DEFAULT_PORT,
-                            token.trim(),
-                            Build.MODEL,
-                            latency,
-                            callMode,
-                        )
-                    },
+                    onClick = { connect(withCallMode = callMode) },
                     enabled = host.isNotBlank() && token.isNotBlank() &&
                         state != AudioEngine.State.Playing,
                 ) { Text("Connect") }
