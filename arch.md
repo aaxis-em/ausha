@@ -456,8 +456,12 @@ a paused call still transmitting the room is a privacy bug.
 `RECORD_AUDIO` is asked for when call mode is switched on, not at startup, and
 the service adds the `microphone` foreground type only while it holds the
 permission, which API 30 requires before `startForeground` rather than merely
-declared. A microphone foreground service also cannot be started from the
-background on API 31+, which is why a pairing link never turns call mode on.
+declared. Call mode is agreed in the handshake, so flipping it while connected
+reconnects in the new mode — after the permission is granted, when it had to be
+asked for. A microphone foreground service also cannot be started from the
+background on API 31+, which is why a pairing link from outside the app never
+turns call mode on; the in-app scanner runs in the foreground and follows the
+switch.
 
 ### Transport controls
 
