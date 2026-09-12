@@ -12,6 +12,7 @@ import android.content.IntentFilter
 import android.content.pm.PackageManager
 import android.content.pm.ServiceInfo
 import android.media.AudioAttributes
+import android.media.AudioDeviceInfo
 import android.media.AudioFocusRequest
 import android.media.AudioManager
 import android.net.ConnectivityManager
@@ -47,6 +48,9 @@ class PlaybackService : Service(), Transport.Controls {
     private var focusRequest: AudioFocusRequest? = null
     private var networkCallback: ConnectivityManager.NetworkCallback? = null
     private var target: Target? = null
+
+    /** The listener's own call volume, held while call mode overrides it. */
+    private var savedCallVolume: Int? = null
 
     /**
      * Set while the user paused deliberately, so that regaining audio focus or
@@ -181,9 +185,20 @@ class PlaybackService : Service(), Transport.Controls {
         // The echo canceller only works on the communication path, and the
         // whole path — capture, playback and this mode — has to be on it
         // together or it has nothing to cancel against.
-        audioManager.mode = when {
+        val mode = when {
             target.callMode -> AudioManager.MODE_IN_COMMUNICATION
             else -> AudioManager.MODE_NORMAL
+        }
+        audioManager.mode = mode
+        // Setting the mode fails quietly when the platform refuses it, and a
+        // refusal means no echo cancellation, so say so rather than leaving it
+        // to be discovered by the person on the other end of the call.
+        if (audioManager.mode != mode) {
+            Log.w(TAG, "audio mode stayed ${audioManager.mode}, wanted $mode; no echo cancellation")
+        }
+        if (target.callMode) {
+            routeCallAudio()
+            raiseCallVolume()
         }
         Playback.engine.start(
             target.host,
@@ -197,8 +212,75 @@ class PlaybackService : Service(), Transport.Controls {
 
     private fun stopPlayback() {
         Playback.engine.stop()
+        restoreCallVolume()
+        clearCallRouting()
         audioManager.mode = AudioManager.MODE_NORMAL
     }
+
+    /**
+     * The voice call stream carries its own volume, on a scale calibrated for
+     * an earpiece against an ear. On the loudspeaker, where call mode puts it,
+     * whatever the system happened to be holding is usually close to inaudible.
+     *
+     * The old level is put back on the way out, so listening to a stream does
+     * not quietly redefine how loud the listener's real phone calls are.
+     */
+    private fun raiseCallVolume() {
+        if (savedCallVolume != null) return
+        runCatching {
+            val loudest = audioManager.getStreamMaxVolume(AudioManager.STREAM_VOICE_CALL)
+            val current = audioManager.getStreamVolume(AudioManager.STREAM_VOICE_CALL)
+            if (current >= loudest) return@runCatching
+            savedCallVolume = current
+            audioManager.setStreamVolume(AudioManager.STREAM_VOICE_CALL, loudest, 0)
+        }
+    }
+
+    private fun restoreCallVolume() {
+        val saved = savedCallVolume ?: return
+        savedCallVolume = null
+        runCatching {
+            val loudest = audioManager.getStreamMaxVolume(AudioManager.STREAM_VOICE_CALL)
+            // Only while it is still where this left it: a listener who reached
+            // for the volume keys meant the level they chose to survive.
+            if (audioManager.getStreamVolume(AudioManager.STREAM_VOICE_CALL) == loudest) {
+                audioManager.setStreamVolume(AudioManager.STREAM_VOICE_CALL, saved, 0)
+            }
+        }
+    }
+
+    /**
+     * Puts call audio on the loudspeaker.
+     *
+     * `MODE_IN_COMMUNICATION` routes playback to the earpiece, which is right
+     * for a phone held against a head and wrong for one lying on a desk being
+     * a speaker: the stream plays, inaudibly, out of the pinhole at the top.
+     * Nothing moves it but an explicit choice. A headset still wins, because
+     * plugging one in is a choice too.
+     */
+    private fun routeCallAudio() {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+            val devices = audioManager.availableCommunicationDevices
+            val wanted = devices.firstOrNull { it.type in HEADSETS }
+                ?: devices.firstOrNull { it.type == AudioDeviceInfo.TYPE_BUILTIN_SPEAKER }
+            wanted?.let { runCatching { audioManager.setCommunicationDevice(it) } }
+            return
+        }
+        @Suppress("DEPRECATION")
+        audioManager.isSpeakerphoneOn = !hasHeadset()
+    }
+
+    private fun clearCallRouting() {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+            runCatching { audioManager.clearCommunicationDevice() }
+            return
+        }
+        @Suppress("DEPRECATION")
+        audioManager.isSpeakerphoneOn = false
+    }
+
+    private fun hasHeadset(): Boolean =
+        audioManager.getDevices(AudioManager.GET_DEVICES_OUTPUTS).any { it.type in HEADSETS }
 
     /**
      * From API 30 a microphone foreground service needs the permission held
@@ -385,6 +467,16 @@ class PlaybackService : Service(), Transport.Controls {
 
     companion object {
         private const val TAG = "ausha"
+
+        /** Outputs a listener chose deliberately, which outrank the loudspeaker. */
+        private val HEADSETS = setOf(
+            AudioDeviceInfo.TYPE_WIRED_HEADSET,
+            AudioDeviceInfo.TYPE_WIRED_HEADPHONES,
+            AudioDeviceInfo.TYPE_USB_HEADSET,
+            AudioDeviceInfo.TYPE_BLUETOOTH_SCO,
+            AudioDeviceInfo.TYPE_BLUETOOTH_A2DP,
+        )
+
         private const val CHANNEL_ID = "ausha.playback"
         private const val NOTIFICATION_ID = 1
         const val ACTION_STOP = "com.ausha.receiver.STOP"

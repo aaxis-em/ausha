@@ -2,6 +2,7 @@ package com.ausha.receiver
 
 import android.Manifest
 import android.content.Intent
+import android.media.AudioManager
 import android.os.Build
 import android.os.Bundle
 import androidx.activity.ComponentActivity
@@ -94,6 +95,16 @@ fun AushaApp(links: MutableStateFlow<Pairing?>) {
     // reconnecting, and only once the microphone can actually be used.
     val microphone = rememberPermissionState(Manifest.permission.RECORD_AUDIO) { granted ->
         if (granted && callMode && connected) connect(withCallMode = true)
+    }
+
+    // Call mode plays on the voice call stream, which carries its own volume.
+    // Left alone, the hardware buttons go on moving the media volume, which by
+    // then controls nothing the listener can hear.
+    LaunchedEffect(callMode) {
+        (context as? ComponentActivity)?.volumeControlStream = when {
+            callMode -> AudioManager.STREAM_VOICE_CALL
+            else -> AudioManager.STREAM_MUSIC
+        }
     }
 
     LaunchedEffect(link) {
