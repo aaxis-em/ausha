@@ -146,7 +146,7 @@ fn summarise(stats: &Stats, elapsed: Duration) {
     let jitter = stats.jitter;
     println!(
         "\nplayed {:.1}s: {} packets, {} lost ({} recovered by FEC, {} concealed), \
-         {} reordered, {} late, {} duplicate, {} underruns, {} silent frames",
+         {} reordered, {} late, {} duplicate, {} shed, {} underruns, {} silent frames",
         elapsed.as_secs_f64(),
         jitter.received,
         jitter.lost,
@@ -155,6 +155,7 @@ fn summarise(stats: &Stats, elapsed: Duration) {
         jitter.reordered,
         jitter.late,
         jitter.duplicates,
+        jitter.dropped,
         jitter.underruns,
         stats.silence_frames,
     );

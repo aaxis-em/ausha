@@ -28,6 +28,8 @@ pub struct Stats {
     pub reordered: u64,
     pub duplicates: u64,
     pub late: u64,
+    /// Frames discarded to bring standing latency back down, not lost.
+    pub dropped: u64,
     pub underruns: u64,
     pub longest_burst: u32,
     pub jitter_ms: f64,
@@ -51,14 +53,35 @@ pub struct JitterBuffer {
     current_burst: u32,
     longest_burst: u32,
     clean_since_us: u64,
+    burst_seen_us: u64,
+    overfull_since_us: u64,
+    shedding: bool,
     stats: Stats,
 }
 
 /// How many jitter estimates of headroom the target depth keeps.
 const JITTER_MARGIN: f64 = 3.0;
-/// A shrink is only considered after this long without growing the target.
-const SHRINK_AFTER_US: u64 = 10_000_000;
-const SHRINK_STEP_MS: u32 = 5;
+/// A shrink is only considered after this long without growing the target, so
+/// a link that is still settling is not trimmed between two bursts.
+const SHRINK_AFTER_US: u64 = 2_000_000;
+/// Share of the distance back to what the link asks for that each shrink
+/// gives up. Proportional rather than fixed: a fixed step took four minutes to
+/// return 120 ms, which left one bad patch paying for itself long after the
+/// link was clean again.
+const SHRINK_DIVISOR: u32 = 4;
+/// Smallest shrink, so closing the last few milliseconds still terminates.
+const SHRINK_FLOOR_MS: u32 = 5;
+/// How long the worst recent run of losses is remembered. On its own clock,
+/// slower than the shrink: the target has to stay deep enough for that run,
+/// and forgetting bursts faster than the link produces them is what turns a
+/// rare long one into an underrun.
+const BURST_MEMORY_US: u64 = 10_000_000;
+
+/// How far above target the buffer may stand, and for how long, before frames
+/// are dropped to get the delay back. A burst overfills the buffer briefly and
+/// that is fine; what has to be shed is depth that simply stays.
+const OVERFILL_MS: u32 = 60;
+const OVERFILL_FOR_US: u64 = 2_000_000;
 
 impl JitterBuffer {
     pub fn new(frame_ms: u32, clock_rate: u32, min_target_ms: u32, max_target_ms: u32) -> Self {
@@ -78,6 +101,9 @@ impl JitterBuffer {
             current_burst: 0,
             longest_burst: 0,
             clean_since_us: 0,
+            burst_seen_us: 0,
+            overfull_since_us: 0,
+            shedding: false,
             stats: Stats {
                 target_ms: min_target_ms,
                 ..Stats::default()
@@ -140,9 +166,23 @@ impl JitterBuffer {
             self.next = self.frames.keys().next().copied();
         }
 
-        let Some(next) = self.next else {
+        let Some(mut next) = self.next else {
             return Step::Starve;
         };
+
+        // Depth that stayed above target is delay nobody asked for. Dropping
+        // the oldest frame buys a whole frame of it back at once, where the
+        // drift resampler would take seconds over the same millisecond.
+        if self.shedding {
+            if self.depth_ms() <= self.target_ms {
+                self.shedding = false;
+                self.overfull_since_us = 0;
+            } else if self.frames.remove(&next).is_some() {
+                self.stats.dropped += 1;
+                next += 1;
+                self.next = Some(next);
+            }
+        }
 
         if let Some(payload) = self.frames.remove(&next) {
             self.current_burst = 0;
@@ -203,6 +243,7 @@ impl JitterBuffer {
     /// Grows the target immediately when jitter demands it, and gives back
     /// depth only slowly, so the buffer does not oscillate on a noisy link.
     fn retarget(&mut self, now_us: u64) {
+        self.watch_overfill(now_us);
         let for_jitter = (JITTER_MARGIN * self.jitter_ms()).ceil() as u32 + self.frame_ms;
         // A run of N consecutive losses empties N frames of depth without
         // replacing them, so the buffer has to be deeper than the worst run
@@ -216,19 +257,39 @@ impl JitterBuffer {
         if wanted > self.target_ms {
             self.target_ms = wanted;
             self.clean_since_us = now_us;
+            self.burst_seen_us = now_us;
             return;
         }
         if self.clean_since_us == 0 {
             self.clean_since_us = now_us;
+            self.burst_seen_us = now_us;
             return;
         }
-        if now_us.saturating_sub(self.clean_since_us) >= SHRINK_AFTER_US {
+        if now_us.saturating_sub(self.burst_seen_us) >= BURST_MEMORY_US {
             self.longest_burst = self.longest_burst.saturating_sub(1);
-            self.target_ms = self
-                .target_ms
-                .saturating_sub(SHRINK_STEP_MS)
-                .max(wanted.max(self.min_target_ms));
+            self.burst_seen_us = now_us;
+        }
+        if now_us.saturating_sub(self.clean_since_us) >= SHRINK_AFTER_US {
+            let floor = wanted.max(self.min_target_ms);
+            let step = (self.target_ms.saturating_sub(floor) / SHRINK_DIVISOR).max(SHRINK_FLOOR_MS);
+            self.target_ms = self.target_ms.saturating_sub(step).max(floor);
             self.clean_since_us = now_us;
+        }
+    }
+
+    /// Notices depth that stays well above target rather than draining. The
+    /// drift resampler is capped at a fraction of a percent, so it would give
+    /// a burst's worth of standing delay back over most of a minute; `pop`
+    /// sheds it a frame at a time once this confirms it is not draining.
+    fn watch_overfill(&mut self, now_us: u64) {
+        if self.depth_ms() <= self.target_ms + OVERFILL_MS {
+            self.overfull_since_us = 0;
+            return;
+        }
+        if self.overfull_since_us == 0 {
+            self.overfull_since_us = now_us;
+        } else if now_us.saturating_sub(self.overfull_since_us) >= OVERFILL_FOR_US {
+            self.shedding = true;
         }
     }
 }
@@ -421,7 +482,7 @@ mod tests {
     }
 
     #[test]
-    fn a_jitter_burst_grows_the_target_and_it_shrinks_back_slowly() {
+    fn a_jitter_burst_grows_the_target_and_it_comes_back_down() {
         let mut link = Link::new();
         for _ in 0..20 {
             let frame = link.emit();
@@ -453,6 +514,74 @@ mod tests {
             "target must give depth back once the link is calm ({stressed} -> {recovered})"
         );
         assert!(recovered >= 40, "target must not fall below the floor");
+    }
+
+    /// Growing on a bad patch is the point; keeping that depth long after the
+    /// link cleared is just latency, and a fixed-step shrink took minutes.
+    #[test]
+    fn the_target_comes_back_within_seconds_of_the_link_clearing() {
+        let mut link = Link::new();
+        for index in 0..500 {
+            let frame = link.emit();
+            link.deliver(&frame, if index % 2 == 0 { 120_000 } else { 0 });
+            let _ = link.buffer.pop();
+        }
+        let stressed = link.buffer.target_ms();
+        assert!(stressed > 40, "the burst should have grown the target");
+
+        let clean_from = link.now_us;
+        let mut settled = None;
+        for _ in 0..5000 {
+            let frame = link.emit();
+            link.deliver(&frame, 0);
+            let _ = link.buffer.pop();
+            if settled.is_none() && link.buffer.target_ms() <= 40 {
+                settled = Some(link.now_us - clean_from);
+            }
+        }
+        let settled = settled.expect("the target never returned to the floor");
+        assert!(
+            settled < 60_000_000,
+            "took {}s to give back {stressed} ms of depth",
+            settled / 1_000_000
+        );
+    }
+
+    /// A burst can leave the buffer standing far deeper than its target. The
+    /// drift resampler gives that back a few milliseconds a second, so the
+    /// delay has to be shed here instead.
+    #[test]
+    fn standing_depth_is_shed_rather_than_left_as_latency() {
+        let mut link = Link::new();
+        for _ in 0..10 {
+            let frame = link.emit();
+            link.deliver(&frame, 0);
+            let _ = link.buffer.pop();
+        }
+        // Arrives in one lump, and the steady pops below never catch up with it.
+        for _ in 0..20 {
+            let frame = link.emit();
+            link.deliver(&frame, 0);
+        }
+        let target = link.buffer.target_ms();
+        assert!(
+            link.buffer.depth_ms() > target + 60,
+            "test did not overfill the buffer"
+        );
+
+        for _ in 0..400 {
+            let frame = link.emit();
+            link.deliver(&frame, 0);
+            let _ = link.buffer.pop();
+        }
+        assert!(
+            link.buffer.depth_ms() <= link.buffer.target_ms() + FRAME_MS,
+            "depth stood at {} ms against a {} ms target",
+            link.buffer.depth_ms(),
+            link.buffer.target_ms()
+        );
+        assert!(link.buffer.stats().dropped > 0, "nothing was shed");
+        assert_eq!(link.buffer.stats().lost, 0, "shedding is not loss");
     }
 
     #[test]
