@@ -44,6 +44,7 @@ class AudioEngine(
     private var thread: Thread? = null
 
     @Volatile private var handle: Long = 0
+    @Volatile private var capture: Microphone? = null
     @Volatile var stats: Stats = Stats(); private set
     @Volatile var failure: String? = null; private set
 
@@ -103,6 +104,7 @@ class AudioEngine(
             val chunk = FloatArray(FRAME_SAMPLES * CHANNELS)
             track.play()
             onState(State.Playing)
+            logRouting(track, callMode)
 
             while (running.get() && Native.nativeIsRunning(handle) == 1) {
                 Native.nativeFill(handle, chunk)
@@ -117,16 +119,44 @@ class AudioEngine(
             onState(State.Failed)
         } finally {
             running.set(false)
-            // The microphone thread holds the same handle, so it has to be gone
-            // before the handle is freed.
-            runCatching { microphone?.join(2000) }
             runCatching { track?.stop() }
             runCatching { track?.release() }
+            // The microphone thread sends into the same handle, so it has to be
+            // gone before the handle is freed. Releasing the device first is
+            // what makes that bounded: the thread is otherwise parked in a
+            // blocking read that nothing else ends.
+            capture?.wake()
+            runCatching { microphone?.join(MICROPHONE_STOP_MS) }
+            capture = null
             if (handle != 0L) {
-                Native.nativeDisconnect(handle)
+                if (microphone?.isAlive == true) {
+                    // Freeing the handle under a thread still sending into it
+                    // is a use-after-free. Leaking one session is the lesser
+                    // fault; the sender reaps it when the keepalive times out.
+                    Log.e(TAG, "microphone thread did not stop; leaking the session")
+                } else {
+                    Native.nativeDisconnect(handle)
+                }
                 handle = 0
             }
         }
+    }
+
+    /**
+     * Where the samples actually went, which is not always where they were
+     * asked to go: the communication path picks its own output device, and may
+     * downmix or resample on the way. Each of those is audible, and none of
+     * them is visible from the stats screen.
+     *
+     * Device types are [android.media.AudioDeviceInfo] constants; 1 is the
+     * earpiece and 2 the loudspeaker.
+     */
+    private fun logRouting(track: AudioTrack, callMode: Boolean) {
+        Log.i(
+            TAG,
+            "playing: callMode=$callMode out=${track.routedDevice?.type} " +
+                "rate=${track.sampleRate} channels=${track.channelCount}",
+        )
     }
 
     /**
@@ -142,12 +172,14 @@ class AudioEngine(
             Log.w(TAG, "call mode asked for but the sender granted no microphone")
             return null
         }
-        return Thread({ captureLoop(handle, frameSamples) }, "ausha-mic").also { it.start() }
+        val microphone = Microphone(frameSamples)
+        capture = microphone
+        return Thread({ captureLoop(handle, microphone, frameSamples) }, "ausha-mic")
+            .also { it.start() }
     }
 
-    private fun captureLoop(handle: Long, frameSamples: Int) {
+    private fun captureLoop(handle: Long, microphone: Microphone, frameSamples: Int) {
         Process.setThreadPriority(Process.THREAD_PRIORITY_URGENT_AUDIO)
-        val microphone = Microphone(frameSamples)
         try {
             if (!microphone.open()) return
             val frame = FloatArray(frameSamples)
@@ -216,6 +248,10 @@ class AudioEngine(
 
     companion object {
         private const val TAG = "ausha"
+
+        /** Long enough for a released device to end a read, short of a hang. */
+        private const val MICROPHONE_STOP_MS = 2000L
+
         const val SAMPLE_RATE = 48000
         const val CHANNELS = 2
         const val FRAME_MS = 20

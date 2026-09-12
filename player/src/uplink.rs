@@ -6,7 +6,7 @@
 
 use std::io;
 use std::net::{Ipv4Addr, UdpSocket};
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
@@ -36,6 +36,7 @@ const REPORT_INTERVAL: Duration = Duration::from_secs(5);
 pub struct Listener {
     port: u16,
     stream: Shared,
+    claims: AtomicU64,
     running: Arc<AtomicBool>,
     thread: Option<JoinHandle<()>>,
 }
@@ -44,6 +45,7 @@ pub struct Listener {
 /// taking the device away.
 pub struct Active {
     stream: Shared,
+    claim: u64,
 }
 
 type Shared = Arc<Mutex<Option<Stream>>>;
@@ -53,6 +55,9 @@ struct Stream {
     pipeline: Pipeline,
     opener: Option<Opener>,
     expected_ssrc: u32,
+    /// Which claim installed this, so the session it replaced can tell that
+    /// the microphone is no longer its to release.
+    claim: u64,
 }
 
 impl Listener {
@@ -77,6 +82,7 @@ impl Listener {
         Ok(Self {
             port,
             stream,
+            claims: AtomicU64::new(0),
             running,
             thread: Some(thread),
         })
@@ -89,14 +95,17 @@ impl Listener {
     pub fn claim(&self, params: &UplinkParams, secret: Option<&Secret>) -> io::Result<Active> {
         let pipeline =
             Pipeline::with_latency(&params.stream, Latency::Voice).map_err(io::Error::other)?;
+        let claim = self.claims.fetch_add(1, Ordering::Relaxed) + 1;
         let stream = Stream {
             pipeline,
             opener: secret.map(|secret| Opener::new(&secret.key(Direction::Uplink))),
             expected_ssrc: params.stream.ssrc,
+            claim,
         };
         *lock(&self.stream) = Some(stream);
         Ok(Active {
             stream: self.stream.clone(),
+            claim,
         })
     }
 }
@@ -111,8 +120,14 @@ impl Drop for Listener {
 }
 
 impl Drop for Active {
+    /// Silence the microphone only while this claim is still the live one. A
+    /// reconnecting receiver takes it over before its previous session ends,
+    /// and that session dropping last must not mute the one that replaced it.
     fn drop(&mut self) {
-        *lock(&self.stream) = None;
+        let mut stream = lock(&self.stream);
+        if stream.as_ref().is_some_and(|live| live.claim == self.claim) {
+            *stream = None;
+        }
     }
 }
 

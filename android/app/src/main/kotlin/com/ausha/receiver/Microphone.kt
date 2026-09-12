@@ -24,10 +24,11 @@ import android.util.Log
  */
 class Microphone(private val frameSamples: Int) {
 
-    private var record: AudioRecord? = null
+    @Volatile private var record: AudioRecord? = null
     private val effects = mutableListOf<AudioEffect>()
 
     /** Returns false rather than throwing when the device or the permission is not there. */
+    @Synchronized
     fun open(): Boolean = runCatching {
         val minBytes = AudioRecord.getMinBufferSize(
             AudioEngine.SAMPLE_RATE,
@@ -65,6 +66,19 @@ class Microphone(private val frameSamples: Int) {
     fun read(into: FloatArray): Int =
         record?.read(into, 0, into.size, AudioRecord.READ_BLOCKING) ?: -1
 
+    /**
+     * Releases a reader parked in [read], so it can notice it should stop.
+     *
+     * Called by whoever is tearing the engine down rather than by the reader
+     * itself, which is the whole point: a blocked read is otherwise the one
+     * thing that can outlive the native handle it sends into.
+     */
+    @Synchronized
+    fun wake() {
+        runCatching { record?.stop() }
+    }
+
+    @Synchronized
     fun close() {
         effects.forEach { runCatching { it.release() } }
         effects.clear()

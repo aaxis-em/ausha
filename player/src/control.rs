@@ -181,9 +181,7 @@ fn open_uplink(
     let Some(listener) = server.uplink.as_ref().filter(|_| wants_uplink) else {
         return Ok((None, None));
     };
-    if !server.registry.claim_uplink(id) {
-        return Err(io::Error::other("another receiver already holds it"));
-    }
+    server.registry.claim_uplink(id);
 
     let params = UplinkParams::new(listener.port(), ids::random_ssrc());
     let microphone = listener.claim(&params, server.secret.as_ref())?;

@@ -67,18 +67,15 @@ impl Registry {
         Some(session.name)
     }
 
-    /// Takes the microphone for this session, or reports that another session
-    /// already holds it. Released by `close`, so it cannot outlive the
-    /// connection that took it.
-    pub fn claim_uplink(&self, id: SessionId) -> bool {
-        let mut inner = self.inner.lock().unwrap();
-        match inner.uplink_owner {
-            Some(owner) if owner != id => false,
-            _ => {
-                inner.uplink_owner = Some(id);
-                true
-            }
-        }
+    /// Takes the microphone for this session. Released by `close`, so it
+    /// cannot outlive the connection that took it.
+    ///
+    /// The latest claim wins. A receiver that reconnects opens its new session
+    /// before the sender has reaped the old one, so refusing the second claim
+    /// locked a phone out of its own microphone for as long as the dead
+    /// session took to time out.
+    pub fn claim_uplink(&self, id: SessionId) {
+        self.inner.lock().unwrap().uplink_owner = Some(id);
     }
 
     pub fn add_static_target(&self, addr: SocketAddr) {
