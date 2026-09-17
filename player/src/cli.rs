@@ -20,6 +20,7 @@ pub struct Cli {
     pub encrypt: bool,
     pub uplink: bool,
     pub uplink_port: u16,
+    pub keep_speakers: bool,
 }
 
 impl Default for Cli {
@@ -39,6 +40,7 @@ impl Default for Cli {
             encrypt: false,
             uplink: false,
             uplink_port: config::DEFAULT_UPLINK_PORT,
+            keep_speakers: false,
         }
     }
 }
@@ -68,6 +70,9 @@ Options:
                           machine can be spoken into from the phone. One
                           receiver at a time. Linux only
   --uplink-port <port>    UDP port the microphone arrives on (default 6998)
+  --keep-speakers         Keep playing through this machine's speakers while
+                          receivers are connected, instead of muting them.
+                          Muting is Linux only
   --name <name>           Name advertised to receivers (default this host)
   --no-discovery          Do not advertise over mDNS
   --no-qr                 Do not print the pairing QR code
@@ -102,6 +107,7 @@ pub fn parse() -> Result<Cli, String> {
             "--encrypt" => cli.encrypt = true,
             "--uplink" => cli.uplink = true,
             "--uplink-port" => cli.uplink_port = parse_with(&flag, &value()?)?,
+            "--keep-speakers" => cli.keep_speakers = true,
             other => return Err(format!("unknown argument: {other}")),
         }
     }

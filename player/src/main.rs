@@ -9,6 +9,7 @@ mod registry;
 mod relay;
 mod sdp;
 mod shutdown;
+mod speakers;
 mod uplink;
 
 use std::io;
@@ -32,10 +33,11 @@ fn main() {
 
     shutdown::listen();
     let result = run(cli);
-    // The uplink's PulseAudio module is the one thing that outlives this
-    // process, and the session that owns it lives on a thread whose destructors
+    // The uplink's PulseAudio module and the speakers' mute outlive this
+    // process, and the sessions that own them live on threads whose destructors
     // a signal will not run.
     pipesource::unload_all();
+    speakers::restore();
 
     if let Err(e) = result {
         eprintln!("error: {e}");
@@ -87,6 +89,12 @@ fn run(cli: cli::Cli) -> io::Result<()> {
         false => None,
     };
 
+    let input = capture::source::resolve(cli.capture.clone())?;
+    let speakers = match cli.keep_speakers {
+        true => None,
+        false => speakers::Speakers::behind(&input.device),
+    };
+
     let control = TcpListener::bind((Ipv4Addr::UNSPECIFIED, cli.control_port))?;
     let server = Arc::new(control::ControlServer {
         registry: registry.clone(),
@@ -96,6 +104,7 @@ fn run(cli: cli::Cli) -> io::Result<()> {
         encryption: encryption.clone(),
         secret,
         uplink: microphone,
+        speakers,
     });
     thread::spawn(move || control::serve(control, server));
     thread::spawn({
@@ -107,7 +116,7 @@ fn run(cli: cli::Cli) -> io::Result<()> {
     let compat_ingest = start_compat(&cli.compat_ts)?;
 
     let mut ffmpeg = capture::spawn(&capture::Settings {
-        device: cli.capture.clone(),
+        input,
         bitrate_kbps: cli.bitrate_kbps,
         ssrc,
         ingest: ingest.local_addr()?,

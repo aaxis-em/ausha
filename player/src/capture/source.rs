@@ -15,9 +15,17 @@ const FORMAT: &str = "pulse";
 #[cfg(target_os = "windows")]
 const FORMAT: &str = "dshow";
 
+/// Detects the loopback device unless the user named one.
+pub fn resolve(device: Option<String>) -> io::Result<Input> {
+    match device {
+        Some(device) => Ok(named(device)),
+        None => detect(),
+    }
+}
+
 /// Takes the user at their word when they name a device with `--capture`,
 /// since only they know what an unusual sound setup calls it.
-pub fn named(device: String) -> Input {
+fn named(device: String) -> Input {
     Input {
         format: FORMAT,
         #[cfg(target_os = "windows")]

@@ -15,8 +15,7 @@ use std::process::{Child, Command, Stdio};
 use ausha_core::config;
 
 pub struct Settings {
-    /// Overrides detection when the user names a device themselves.
-    pub device: Option<String>,
+    pub input: source::Input,
     pub bitrate_kbps: u32,
     pub ssrc: u32,
     pub ingest: SocketAddr,
@@ -45,14 +44,11 @@ impl Drop for Encoder {
 }
 
 pub fn spawn(settings: &Settings) -> io::Result<Encoder> {
-    let input = match &settings.device {
-        Some(device) => source::named(device.clone()),
-        None => source::detect()?,
-    };
+    let input = &settings.input;
     println!("capture: {} source {}", input.format, input.device);
     let mut command = Command::new("ffmpeg");
     command
-        .args(build_args(&input, settings))
+        .args(build_args(input, settings))
         .stdout(Stdio::null())
         .stderr(Stdio::inherit());
     lifetime::before_spawn(&mut command);

@@ -9,6 +9,7 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use crate::ids;
 use crate::registry::{Registry, SessionId};
+use crate::speakers::Speakers;
 use ausha_core::config;
 use ausha_core::crypto::Secret;
 use ausha_core::lines::{Incoming, LineReader};
@@ -26,6 +27,7 @@ pub struct ControlServer {
     pub encryption: Option<Encryption>,
     pub secret: Option<Secret>,
     pub uplink: Option<uplink::Listener>,
+    pub speakers: Option<Speakers>,
 }
 
 pub fn serve(listener: TcpListener, server: Arc<ControlServer>) {
@@ -138,6 +140,7 @@ fn run_session(
         .map_err(|_| io::Error::new(io::ErrorKind::TimedOut, "no UDP punch received"))?;
     send(writer, &ServerMessage::Ready)?;
     println!("control: {name} ready, media to {media}");
+    let _listening = server.speakers.as_ref().map(Speakers::listen);
 
     let mut last_seen = Instant::now();
     let mut last_ping = Instant::now();
