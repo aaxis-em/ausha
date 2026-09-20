@@ -33,6 +33,7 @@ android {
 
     sourceSets["main"].jniLibs.srcDir(layout.buildDirectory.dir("rustJniLibs"))
     sourceSets["main"].kotlin.srcDir("src/main/kotlin")
+    sourceSets["test"].kotlin.srcDir("src/test/kotlin")
 }
 
 dependencies {
@@ -49,7 +50,8 @@ dependencies {
     implementation(libs.camera.camera2)
     implementation(libs.camera.lifecycle)
     implementation(libs.camera.view)
-    implementation(libs.mlkit.barcode.scanning)
+    implementation(libs.zxing.core)
+    testImplementation(libs.junit)
 }
 
 /**
