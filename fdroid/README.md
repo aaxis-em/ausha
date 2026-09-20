@@ -54,9 +54,12 @@ Five things, each of which is easy to break:
    Run `fdroid lint com.ausha.receiver` and `fdroid rewritemeta
    com.ausha.receiver` in that checkout first; both must come back clean.
    `rewritemeta` drops comments, which is why everything a reviewer needs is in
-   the `MaintainerNotes` field rather than in a comment. Lint does not check the
-   metadata schema, so run that too — it is a separate CI job and it rejects
-   fields lint accepts:
+   the `MaintainerNotes` field rather than in a comment. If it reflows lines it
+   has no reason to touch, the local `ruamel.yaml` is folding long scalars
+   differently from the one in fdroiddata's CI image: keep CI's wrapping and
+   change only the lines that carry meaning, or the `rewritemeta` job fails.
+   Lint does not check the metadata schema, so run that too — it is a separate
+   CI job and it rejects fields lint accepts:
 
    ```bash
    check-jsonschema --schemafile schemas/metadata.json metadata/com.ausha.receiver.yml
