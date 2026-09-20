@@ -1,0 +1,4 @@
+Packaging fix, no change to the app itself.
+
+• Fixed the release build failing on F-Droid's build server, which edits the
+  signing configuration out of the Gradle script before building.

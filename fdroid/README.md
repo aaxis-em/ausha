@@ -16,7 +16,7 @@ files are edited here and never in fdroiddata.
 
 ## What makes this app buildable by F-Droid
 
-Four things, each of which is easy to break:
+Five things, each of which is easy to break:
 
 1. **No proprietary dependencies.** F-Droid's scanner rejects the build if it
    finds one. QR scanning is `com.google.zxing:core`, not ML Kit. Before adding
@@ -28,6 +28,15 @@ Four things, each of which is easy to break:
    NDK. The recipe installs exactly those versions.
 4. **No Play dependency blob.** `dependenciesInfo { includeInApk = false }`,
    because that blob is encrypted and differs on every build.
+5. **A build script that survives having its signing config deleted.** Before
+   running Gradle, `fdroid build` edits `build.gradle.kts` in place: it deletes
+   the whole `signingConfigs { ... }` block and every line matching
+   `signingConfig = <no-spaces>`. Anything left dangling by those two deletions
+   is a compile error, which is why the `signingConfig` assignment is a single
+   line using `findByName`. To check a change to that part of the file, run the
+   real edit against a clean copy before tagging — the regexes are
+   `gradle_signing_configs` and `gradle_line_matches` in fdroidserver's
+   `common.py`.
 
 ## Cutting a release
 
@@ -45,8 +54,15 @@ Four things, each of which is easy to break:
    Run `fdroid lint com.ausha.receiver` and `fdroid rewritemeta
    com.ausha.receiver` in that checkout first; both must come back clean.
    `rewritemeta` drops comments, which is why everything a reviewer needs is in
-   the `MaintainerNotes` field rather than in a comment.
-   After that, `AutoUpdateMode: Version v%v` picks up new tags on its own and no
+   the `MaintainerNotes` field rather than in a comment. Lint does not check the
+   metadata schema, so run that too — it is a separate CI job and it rejects
+   fields lint accepts:
+
+   ```bash
+   check-jsonschema --schemafile schemas/metadata.json metadata/com.ausha.receiver.yml
+   ```
+
+   After that, `AutoUpdateMode: Version` picks up new tags on its own and no
    further merge requests are needed unless the recipe itself changes.
 
 If the recipe does need changing — a new NDK, a new Rust version, a new system

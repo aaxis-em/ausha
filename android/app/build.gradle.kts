@@ -38,8 +38,8 @@ android {
         applicationId = "com.ausha.receiver"
         minSdk = 26
         targetSdk = 34
-        versionCode = 1
-        versionName = "0.1.0"
+        versionCode = 2
+        versionName = "0.1.1"
         ndk { abiFilters += abis }
     }
 
@@ -50,9 +50,11 @@ android {
     buildTypes {
         release {
             isMinifyEnabled = false
-            signingConfig = signingConfigs
-                .getByName("release")
-                .takeIf { it.storeFile != null }
+            // F-Droid's build strips the signingConfigs block above out of this
+            // file before running Gradle, so the lookup has to tolerate its
+            // absence and stay on one line: a multi-line expression here is left
+            // dangling by that edit and the script no longer compiles.
+            signingConfig = signingConfigs.findByName("release")?.takeIf { it.storeFile != null }
 
             /** Only Play reads this, and it puts the git commit in the APK. */
             vcsInfo { include = false }
