@@ -1,7 +1,12 @@
 [package]
 name = "ausha-core"
-version = "0.1.0"
-edition = "2024"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+authors.workspace = true
+description = "Ausha protocol types and receive pipeline: RTP, jitter buffer, FEC and drift correction"
 
 [dependencies]
 serde = { version = "1", features = ["derive"] }

@@ -1,7 +1,12 @@
 [package]
 name = "ausha-mobile"
-version = "0.1.0"
-edition = "2024"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+authors.workspace = true
+description = "JNI bridge exposing ausha-client to the Ausha Android app"
 
 [lib]
 name = "ausha_mobile"
