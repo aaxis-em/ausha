@@ -4,3 +4,8 @@ build/
 local.properties
 .idea/
 .cxx/
+
+# Release signing. Never commit these.
+keystore.properties
+*.jks
+*.keystore

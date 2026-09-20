@@ -1,0 +1,95 @@
+# Our copy of the recipe F-Droid builds from. The one it actually reads lives at
+# metadata/com.ausha.receiver.yml in the fdroiddata repository; fdroid/README.md
+# says how to submit it. Field order below is the one `fdroid rewritemeta`
+# enforces — and note that it strips comments, so anything a reviewer or a
+# future maintainer needs belongs in MaintainerNotes, not up here.
+
+Categories:
+  - Multimedia
+  - Connectivity
+License: GPL-3.0-or-later
+AuthorName: Aaxis-em
+WebSite: https://aaxis-em.github.io/ausha/
+SourceCode: https://github.com/aaxis-em/ausha
+IssueTracker: https://github.com/aaxis-em/ausha/issues
+Changelog: https://github.com/aaxis-em/ausha/releases
+
+AutoName: Ausha
+
+RepoType: git
+Repo: https://github.com/aaxis-em/ausha.git
+
+Builds:
+  - versionName: 0.1.0
+    versionCode: 1
+    commit: v0.1.0
+    subdir: android/app
+    sudo:
+      - apt-get update
+      - apt-get install -y build-essential cmake curl
+      - curl -o /tmp/rustup-init
+        https://static.rust-lang.org/rustup/archive/1.29.1/x86_64-unknown-linux-gnu/rustup-init
+      - echo 'dda7234360b7f578ca8b0ddcb80145646fa61a67c1720a5abc7051b35c9fcb71
+        /tmp/rustup-init' | sha256sum -c -
+      - chmod +x /tmp/rustup-init
+      - env RUSTUP_HOME=/opt/rustup CARGO_HOME=/opt/cargo /tmp/rustup-init
+        -y --no-modify-path --profile minimal --default-toolchain 1.92.0
+        --component clippy --component rustfmt
+        --target aarch64-linux-android
+        --target armv7-linux-androideabi
+        --target x86_64-linux-android
+      - env RUSTUP_HOME=/opt/rustup CARGO_HOME=/opt/cargo /opt/cargo/bin/cargo
+        install cargo-ndk --version 4.1.2 --locked
+      - printf '#!/bin/sh\nexport RUSTUP_HOME=/opt/rustup CARGO_HOME=/opt/cargo\nexport
+        PATH=/opt/cargo/bin:$PATH\nexec /opt/cargo/bin/cargo "$@"\n' > /usr/local/bin/cargo
+      - chmod 0755 /usr/local/bin/cargo
+      - chmod -R a+rwX /opt/rustup /opt/cargo
+    gradle:
+      - yes
+    prebuild:
+      - cargo --version
+      - cargo ndk --version
+    ndk: 28.2.13676358
+
+MaintainerNotes: |-
+  Rust, not just Kotlin. The receive pipeline — RTP, jitter buffer, Opus FEC,
+  loss concealment, drift correction — is the ausha-core and ausha-client crates
+  at the repository root. android/app/build.gradle.kts drives cargo-ndk to
+  cross-compile them into libausha_mobile.so for each ABI in the `ausha.abis`
+  Gradle property, whose default (arm64-v8a, armeabi-v7a, x86_64) is the set
+  this build wants, so no -P override is passed. The same property also sets
+  `ndk.abiFilters`, so the APK can never declare an ABI it has no .so for.
+
+  Why the sudo block:
+
+  * There is no Rust in the buildserver image. It is installed into /opt rather
+    than a home directory, with a wrapper at /usr/local/bin/cargo that exports
+    RUSTUP_HOME and CARGO_HOME, because the Gradle task invokes a plain `cargo`
+    and gets no login shell. rustup-init is version-pinned and checksummed.
+  * cmake and a host C compiler are for opusic-sys, which compiles libopus from
+    the C sources it vendors.
+  * The --default-toolchain must match rust-toolchain.toml at the repository
+    root, or rustup will try to download the pinned toolchain mid-build. Bump
+    the two together.
+
+  The Gradle task locates the NDK through ANDROID_NDK_HOME and falls back to
+  ANDROID_NDK, so the `ndk:` key above is what points it at the right one. It
+  is pinned because a different NDK produces a different .so.
+
+  No proprietary dependencies. QR scanning is com.google.zxing:core over
+  CameraX, not ML Kit. The Play dependency-metadata blob and the VCS-info file
+  are both switched off in the release build type, since both are non-reproducible.
+
+  Every permission is used locally. INTERNET and the WIFI/multicast permissions
+  are for LAN sockets and mDNS discovery; RECORD_AUDIO only while the user
+  switches on call mode; CAMERA only to read the pairing QR code. The app talks
+  to one paired computer on the local network and nothing else — no servers, no
+  accounts, no analytics.
+
+  The app is the receiver half. It needs the sender from the same repository
+  running on a computer on the same network, which is Linux-only today.
+
+AutoUpdateMode: Version v%v
+UpdateCheckMode: Tags ^v[0-9.]+$
+CurrentVersion: 0.1.0
+CurrentVersionCode: 1

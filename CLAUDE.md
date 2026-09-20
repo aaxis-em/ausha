@@ -37,7 +37,7 @@ unless asked.
 For the Android app:
 
 ```bash
-cd android && ./gradlew :app:assembleDebug
+cd android && ./gradlew :app:testDebugUnitTest :app:assembleDebug
 ```
 
 Gradle drives `cargo-ndk` itself, so never build the `.so` separately — a

@@ -1,0 +1,11 @@
+# Pinned so that the Android artifacts F-Droid builds from a tag are bit-identical
+# to the ones built here. Changing the channel changes the published binaries.
+[toolchain]
+channel = "1.92.0"
+profile = "minimal"
+components = ["clippy", "rustfmt"]
+targets = [
+    "aarch64-linux-android",
+    "armv7-linux-androideabi",
+    "x86_64-linux-android",
+]

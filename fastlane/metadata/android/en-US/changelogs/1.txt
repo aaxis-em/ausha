@@ -1,0 +1,9 @@
+First release.
+
+• Play your computer's audio on the phone over Wi-Fi, in Opus over RTP.
+• Call mode: send the phone's microphone back as a capture device on the computer.
+• Pair by scanning the sender's QR code, or pick a sender discovered over mDNS.
+• Jitter buffer, forward error correction, loss concealment and drift correction,
+  with low, balanced and stable latency settings.
+• Background playback with headset and notification controls.
+• Optional end-to-end encryption of the audio.
