@@ -1,0 +1,62 @@
+name: release
+
+# Builds the Linux artifacts for a pushed version tag and attaches them to the
+# GitHub release. The tag is also what F-Droid builds the Android app from, on
+# its own infrastructure — see fdroid/README.md.
+
+on:
+  push:
+    tags: ["v[0-9]+.[0-9]+.[0-9]+"]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  linux:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Check the tag matches the workspace version
+        if: startsWith(github.ref, 'refs/tags/')
+        run: |
+          crate=$(cargo metadata --no-deps --format-version 1 \
+            | python3 -c 'import json,sys; print(json.load(sys.stdin)["packages"][0]["version"])')
+          tag=${GITHUB_REF_NAME#v}
+          if [ "$crate" != "$tag" ]; then
+            echo "tag $tag does not match workspace version $crate" >&2
+            exit 1
+          fi
+
+      - name: Install build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y cmake musl-tools rpm
+
+      # rust-toolchain.toml decides the version and the targets.
+      - name: Install the pinned Rust toolchain
+        run: rustup show
+
+      - uses: Swatinem/rust-cache@v2
+
+      - run: cargo test --release
+
+      - name: Build packages
+        run: ./scripts/package.sh
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: linux-packages
+          path: dist/
+
+      - name: Attach to the release
+        if: startsWith(github.ref, 'refs/tags/')
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          if gh release view "$GITHUB_REF_NAME" >/dev/null 2>&1; then
+            gh release upload "$GITHUB_REF_NAME" --clobber dist/*
+          else
+            gh release create "$GITHUB_REF_NAME" --verify-tag --generate-notes dist/*
+          fi

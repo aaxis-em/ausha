@@ -1,0 +1,18 @@
+#!/bin/sh
+# One AppImage, two programs. Symlink it to ausha-recv, or pass `recv` as the
+# first argument, to get the receiver instead of the sender.
+set -eu
+
+here="$(dirname "$(readlink -f "$0")")"
+export PATH="$here/usr/bin:$PATH"
+
+case "$(basename "${ARGV0:-$0}")" in
+    *ausha-recv*) exec "$here/usr/bin/ausha-recv" "$@" ;;
+esac
+
+if [ "${1:-}" = recv ]; then
+    shift
+    exec "$here/usr/bin/ausha-recv" "$@"
+fi
+
+exec "$here/usr/bin/ausha" "$@"

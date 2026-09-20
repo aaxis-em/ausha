@@ -1,0 +1,50 @@
+# Maintainer: Aaxis-em <aashishadhikari693@gmail.com>
+
+pkgname=ausha
+pkgver=0.1.0
+pkgrel=1
+pkgdesc='Stream desktop audio to receivers on the local network, and use a phone as the microphone'
+arch=('x86_64' 'aarch64')
+url='https://github.com/aaxis-em/ausha'
+license=('GPL-3.0-or-later')
+depends=('gcc-libs' 'glibc' 'ffmpeg' 'libpulse' 'iproute2')
+makedepends=('cargo' 'cmake')
+optdepends=('alsa-utils: aplay output for ausha-recv')
+source=("$pkgname-$pkgver.tar.gz::$url/archive/refs/tags/v$pkgver.tar.gz")
+# Replace with the output of `updpkgsums` once the tag is pushed; SKIP will not
+# pass AUR review for a tagged tarball.
+sha256sums=('SKIP')
+
+prepare() {
+    cd "$pkgname-$pkgver"
+    # The repository pins a toolchain for reproducible Android builds; Arch
+    # packages build against the distribution's rust.
+    export RUSTUP_TOOLCHAIN=stable
+    cargo fetch --locked --target "$(rustc -vV | sed -n 's/^host: //p')"
+}
+
+build() {
+    cd "$pkgname-$pkgver"
+    export RUSTUP_TOOLCHAIN=stable
+    export CARGO_TARGET_DIR=target
+    cargo build --frozen --release -p player -p ausha-receiver
+}
+
+check() {
+    cd "$pkgname-$pkgver"
+    export RUSTUP_TOOLCHAIN=stable
+    cargo test --frozen --release -p ausha-core -p ausha-client -p player
+}
+
+package() {
+    cd "$pkgname-$pkgver"
+    install -Dm755 target/release/ausha "$pkgdir/usr/bin/ausha"
+    install -Dm755 target/release/ausha-recv "$pkgdir/usr/bin/ausha-recv"
+    for page in ausha ausha-recv; do
+        sed "s/@VERSION@/$pkgver/" "packaging/$page.1" \
+            > "$srcdir/$page.1"
+        install -Dm644 "$srcdir/$page.1" "$pkgdir/usr/share/man/man1/$page.1"
+    done
+    install -Dm644 LICENSE "$pkgdir/usr/share/licenses/$pkgname/LICENSE"
+    install -Dm644 Readme.md "$pkgdir/usr/share/doc/$pkgname/Readme.md"
+}

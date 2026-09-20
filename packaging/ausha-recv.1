@@ -1,0 +1,108 @@
+.TH AUSHA-RECV 1 "2026-09-20" "ausha @VERSION@" "User Commands"
+.SH NAME
+ausha-recv \- play a stream from an Ausha sender
+.SH SYNOPSIS
+.B ausha-recv
+.BI \-\-host " ip"
+.BI \-\-token " token"
+.RI [ options ]
+.SH DESCRIPTION
+.B ausha-recv
+is the desktop receiver. It pairs with an
+.BR ausha (1)
+sender on the local network and plays what that machine is playing. Both the
+address and the token are printed by the sender on start.
+.PP
+It runs the same receive pipeline as the Android app: a jitter buffer, Opus
+in-band FEC, packet loss concealment and continuous clock drift correction, so
+playback neither runs dry nor drifts on a network that loses and reorders
+packets. Samples go to a player process
+.RB ( pacat ", " aplay " or " ffplay )
+chosen with
+.BR \-\-sink .
+.PP
+Statistics print while it runs. A rising
+.I underruns
+count means the link cannot keep up: lower the sender's bitrate, or ask for
+more buffering with
+.BR "\-\-latency stable" .
+.SH OPTIONS
+.TP
+.BI \-\-host " ip"
+Sender address. Required.
+.TP
+.BI \-\-token " token"
+Pairing token the sender printed. Required, and it changes on every sender
+restart unless the sender pins it with
+.BR \-\-token .
+.TP
+.BI \-\-control\-port " port"
+Sender control port. Default 6996.
+.TP
+.BI \-\-name " name"
+Name shown on the sender. Defaults to this host's name.
+.TP
+.BI \-\-sink " program"
+Where samples go:
+.BR pacat ", " aplay ", " ffplay ", or " null .
+Default is the first of those found.
+.TP
+.BI \-\-sink\-latency " ms"
+Requested device latency. Default 20.
+.TP
+.BI \-\-run\-for " seconds"
+Exit after this long, for soak testing.
+.TP
+.BI \-\-latency " preset"
+.BR low ", " balanced ", " stable " or " voice .
+Default
+.BR balanced .
+Deeper buffering survives a worse network but adds delay.
+.TP
+.B \-\-uplink\-tone
+Send a 440 Hz tone up the microphone channel, to check a sender's
+.B \-\-uplink
+virtual microphone without a phone.
+.TP
+.BI \-\-simulate\-loss " pct"
+Drop this percentage of received packets, to exercise concealment against a
+real sender.
+.TP
+.BR \-h ", " \-\-help
+Show a usage summary and exit.
+.SH EXAMPLES
+Play what the sender at 192.168.1.10 is playing:
+.PP
+.RS
+.EX
+ausha\-recv \-\-host 192.168.1.10 \-\-token abc123
+.EE
+.RE
+.PP
+Ride out a network that loses packets, at the cost of some delay:
+.PP
+.RS
+.EX
+ausha\-recv \-\-host 192.168.1.10 \-\-token abc123 \-\-latency stable
+.EE
+.RE
+.SH REQUIREMENTS
+One of
+.BR pacat (1)
+from pulseaudio-utils,
+.BR aplay (1)
+from alsa-utils, or
+.BR ffplay (1)
+from ffmpeg.
+.SH SEE ALSO
+.BR ausha (1),
+.BR pacat (1),
+.BR aplay (1)
+.PP
+Full documentation at
+.UR https://github.com/aaxis-em/ausha
+.UE .
+.SH BUGS
+Report at
+.UR https://github.com/aaxis-em/ausha/issues
+.UE .

@@ -1,0 +1,145 @@
+.TH AUSHA 1 "2026-09-20" "ausha @VERSION@" "User Commands"
+.SH NAME
+ausha \- stream desktop audio to receivers on the local network
+.SH SYNOPSIS
+.B ausha
+.RI [ options ]
+.SH DESCRIPTION
+.B ausha
+captures whatever this machine is already playing and sends it as Opus audio in
+RTP to receivers on the same network: the Ausha Android app, or
+.BR ausha-recv (1)
+on another computer.
+.PP
+On start it prints a pairing token and a QR code and then waits. Receivers
+register over a TCP control channel and receive media over UDP. The token
+changes on every start unless
+.B \-\-token
+pins it.
+.PP
+With
+.B \-\-uplink
+the traffic also runs the other way: one receiver's microphone is published on
+this machine as a capture device named
+.BR ausha ,
+so a call taken here can be spoken into from the phone.
+.SH OPTIONS
+.TP
+.BI \-\-control\-port " port"
+TCP control channel port. Default 6996.
+.TP
+.BI \-\-media\-port " port"
+UDP media port receivers punch and listen on. Default 6997.
+.TP
+.BI \-\-bitrate " kbps"
+Opus bitrate. Default 128. Lower it on a struggling network.
+.TP
+.BI \-\-token " token"
+Use a fixed pairing token instead of generating one.
+.TP
+.BI \-\-static\-client " addr"
+Always send media to this
+.IR ip:port ,
+with no handshake.
+.TP
+.BI \-\-sdp\-out " path"
+Write an SDP describing the
+.B \-\-static\-client
+stream, playable with
+.BR ffplay .
+.TP
+.BI \-\-compat\-ts " ip:port"
+Also push MPEG-TS to this address, for mpv or VLC. Repeatable. This skips the
+handshake, so it skips pairing and is not covered by
+.BR \-\-encrypt :
+use it only on a network you trust.
+.TP
+.BI \-\-capture " device"
+Capture this device instead of the detected one.
+.TP
+.B \-\-encrypt
+Encrypt the media payload with ChaCha20-Poly1305, keyed by the pairing token.
+Ausha receivers follow automatically;
+.B ffplay
+and
+.B \-\-sdp\-out
+cannot.
+.TP
+.B \-\-uplink
+Accept a receiver's microphone and publish it as a capture device named
+.BR ausha .
+One receiver at a time. Linux only.
+.TP
+.BI \-\-uplink\-port " port"
+UDP port the microphone arrives on. Default 6998.
+.TP
+.B \-\-keep\-speakers
+Keep playing through this machine's speakers while receivers are connected,
+instead of muting them. Muting is Linux only.
+.TP
+.BI \-\-name " name"
+Name advertised to receivers. Defaults to this host's name.
+.TP
+.B \-\-no\-discovery
+Do not advertise over mDNS. Receivers must then be pointed at this machine by
+address.
+.TP
+.B \-\-no\-qr
+Do not print the pairing QR code.
+.TP
+.BR \-h ", " \-\-help
+Show a usage summary and exit.
+.SH NETWORK PORTS
+TCP 6996 for control, UDP 6997 for media and UDP 6998 for the uplink, all
+configurable above. A firewall that drops these is the usual reason a receiver
+times out. Many guest and hotel networks block device-to-device traffic
+entirely, which Ausha cannot work around.
+.SH EXAMPLES
+Stream to a phone or another computer:
+.PP
+.RS
+.EX
+ausha
+.EE
+.RE
+.PP
+Take a call on this machine and speak into it from the phone:
+.PP
+.RS
+.EX
+ausha \-\-uplink
+.EE
+.RE
+.PP
+Then choose
+.B ausha
+as the microphone in the call application.
+.PP
+Reuse one token so receivers do not have to re-pair on every restart, and
+encrypt the audio:
+.PP
+.RS
+.EX
+ausha \-\-token my\-secret \-\-encrypt
+.EE
+.RE
+.SH REQUIREMENTS
+.BR ffmpeg (1)
+built with libopus, for capture and encoding;
+.BR pactl (1)
+from pulseaudio-utils, to find the monitor source and to publish the uplink
+device; and
+.BR ip (8)
+from iproute2, for mDNS advertisement.
+.SH SEE ALSO
+.BR ausha-recv (1),
+.BR ffmpeg (1),
+.BR pactl (1)
+.PP
+Full documentation at
+.UR https://github.com/aaxis-em/ausha
+.UE .
+.SH BUGS
+Report at
+.UR https://github.com/aaxis-em/ausha/issues
+.UE .

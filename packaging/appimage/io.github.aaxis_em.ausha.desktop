@@ -1,0 +1,10 @@
+[Desktop Entry]
+Type=Application
+Name=Ausha
+GenericName=Desktop audio streaming
+Comment=Stream desktop audio to receivers on the local network
+Exec=ausha
+Icon=io.github.aaxis_em.ausha
+Categories=AudioVideo;Audio;
+Terminal=true
+Keywords=audio;stream;cast;speaker;microphone;

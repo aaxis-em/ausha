@@ -41,6 +41,71 @@ your call app as an input device named **ausha**.
 
 ---
 
+# Install
+
+> **Nothing is published yet.** There is no release, no AUR package and no
+> F-Droid listing so far, so for the moment build from source — the commands
+> below are what the first release will look like. See
+> [packaging/README.md](packaging/README.md) and
+> [fdroid/README.md](fdroid/README.md) for where that stands.
+
+## On the computer
+
+Debian, Ubuntu or Mint:
+
+```bash
+sudo apt install ./ausha_0.1.0_amd64.deb
+```
+
+Fedora, RHEL or openSUSE:
+
+```bash
+sudo dnf install ./ausha-0.1.0-1.x86_64.rpm
+```
+
+Arch, from the [AUR](https://aur.archlinux.org/packages/ausha):
+
+```bash
+paru -S ausha
+```
+
+Any other distribution — a static build that needs no libraries:
+
+```bash
+tar xf ausha-0.1.0-x86_64-linux-musl.tar.gz
+cd ausha-0.1.0-x86_64-linux-musl
+sudo ./install.sh                   # or: prefix=$HOME/.local ./install.sh
+```
+
+There is an AppImage too, if you would rather not install anything:
+
+```bash
+chmod +x ausha-0.1.0-x86_64.AppImage
+./ausha-0.1.0-x86_64.AppImage              # the sender
+./ausha-0.1.0-x86_64.AppImage recv --help  # the receiver
+```
+
+Downloads are on the [releases page](https://github.com/aaxis-em/ausha/releases).
+Either way you need **ffmpeg** built with libopus and **pactl** on the machine;
+the packages pull both in, the tarball and AppImage tell you if they are
+missing.
+
+Build from source, which needs Rust and cmake, and is the only route today:
+
+```bash
+cargo build --release
+```
+
+That leaves the binaries in `target/release/`. To build the packages themselves,
+see [packaging/README.md](packaging/README.md).
+
+## On the phone
+
+The Android app is in [`android/`](android/). Build it as [step 2
+below](#2-put-the-app-on-your-phone) describes.
+
+---
+
 # How to use it
 
 ## 1. Start it on the computer
@@ -48,13 +113,13 @@ your call app as an input device named **ausha**.
 To listen only:
 
 ```bash
-cargo run --release --bin ausha
+ausha
 ```
 
 For calls as well:
 
 ```bash
-cargo run --release --bin ausha -- --uplink
+ausha --uplink
 ```
 
 It prints a pairing code and a QR code. Leave it running.
@@ -64,9 +129,21 @@ It prints a pairing code and a QR code. Leave it running.
 
 ## 2. Put the app on your phone
 
+Build it yourself:
+
 1. Open the `android/` folder in Android Studio.
 2. On the phone, turn on **USB debugging**, and plug it into the computer.
 3. Press **Run**.
+
+Or from the command line, which needs the Android SDK, the NDK and
+[`cargo-ndk`](https://github.com/bbqsrc/cargo-ndk):
+
+```bash
+cd android && ./gradlew :app:installDebug
+```
+
+> The app is packaged for **F-Droid** but not yet submitted; see
+> [fdroid/README.md](fdroid/README.md) for where that stands.
 
 ## 3. Connect
 
@@ -85,7 +162,7 @@ the microphone in Zoom, Discord, Meet — whatever you are calling from.
 No app needed. Use the address and code the sender printed:
 
 ```bash
-cargo run --release --bin ausha-recv -- --host <ip> --token <code>
+ausha-recv --host <ip> --token <code>
 ```
 
 ---
@@ -132,4 +209,14 @@ On another computer, `ausha-recv`:
   playing the stream in `ffplay` or mpv, encrypting it, soaking several
   receivers at once.
 - **[plan.md](plan.md)** — what is done and what is next.
+- **[packaging/README.md](packaging/README.md)** — building the Linux packages,
+  and what each format is for.
+- **[fdroid/README.md](fdroid/README.md)** — cutting a release of the Android
+  app and publishing it on F-Droid.
 - Tests: `cargo test`.
+
+---
+
+## License
+
+[GPL-3.0-or-later](LICENSE).

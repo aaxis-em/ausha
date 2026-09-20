@@ -1,0 +1,51 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<component type="desktop-application">
+  <id>io.github.aaxis_em.ausha</id>
+  <launchable type="desktop-id">io.github.aaxis_em.ausha.desktop</launchable>
+  <name>Ausha</name>
+  <summary>Stream desktop audio to receivers on the local network</summary>
+  <metadata_license>CC0-1.0</metadata_license>
+  <project_license>GPL-3.0-or-later</project_license>
+  <developer id="io.github.aaxis_em">
+    <name>Aaxis-em</name>
+  </developer>
+
+  <description>
+    <p>
+      Ausha captures whatever this computer is already playing and streams it as
+      Opus audio in RTP to receivers on the same network: the Ausha Android app,
+      or ausha-recv on another computer.
+    </p>
+    <p>
+      Call mode runs the traffic the other way as well, publishing a receiver's
+      microphone here as a capture device named ausha, so a call taken on this
+      machine can be spoken into from a phone.
+    </p>
+    <p>
+      Both programs are command line tools. They need ffmpeg and pactl on the
+      host; this image bundles neither.
+    </p>
+  </description>
+
+  <categories>
+    <category>AudioVideo</category>
+    <category>Audio</category>
+  </categories>
+
+  <url type="homepage">https://aaxis-em.github.io/ausha/</url>
+  <url type="bugtracker">https://github.com/aaxis-em/ausha/issues</url>
+  <url type="vcs-browser">https://github.com/aaxis-em/ausha</url>
+
+  <provides>
+    <binary>ausha</binary>
+    <binary>ausha-recv</binary>
+  </provides>
+
+  <releases>
+    <release version="0.1.0" date="2026-09-20">
+      <description><p>First release.</p></description>
+    </release>
+  </releases>
+
+  <content_rating type="oars-1.1"/>
+</component>
