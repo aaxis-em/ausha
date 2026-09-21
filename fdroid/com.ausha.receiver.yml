@@ -25,9 +25,10 @@ Builds:
       - yes
     prebuild:
       - rustup default 1.92.0
-      - rustup target add aarch64-linux-android armv7-linux-androideabi 
-        x86_64-linux-android
+      - rustup target add aarch64-linux-android armv7-linux-androideabi x86_64-linux-android
       - cargo install cargo-ndk --version 4.1.2 --locked
+      - cargo --version
+      - cargo ndk --version
     ndk: 28.2.13676358
 
 MaintainerNotes: |-
