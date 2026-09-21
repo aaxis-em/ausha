@@ -38,8 +38,8 @@ android {
         applicationId = "com.ausha.receiver"
         minSdk = 26
         targetSdk = 34
-        versionCode = 2
-        versionName = "0.1.1"
+        versionCode = 3
+        versionName = "0.1.2"
         ndk { abiFilters += abis }
     }
 
@@ -49,7 +49,11 @@ android {
 
     buildTypes {
         release {
-            isMinifyEnabled = false
+            isMinifyEnabled = true
+            proguardFiles(
+                getDefaultProguardFile("proguard-android-optimize.txt"),
+                "proguard-rules.pro",
+            )
             // F-Droid's build strips the signingConfigs block above out of this
             // file before running Gradle, so the lookup has to tolerate its
             // absence and stay on one line: a multi-line expression here is left

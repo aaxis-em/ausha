@@ -1,0 +1,3 @@
+Build change, no change to the app itself.
+
+• The release build now runs R8, so the APK carries only the code it uses.

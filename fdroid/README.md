@@ -16,7 +16,7 @@ files are edited here and never in fdroiddata.
 
 ## What makes this app buildable by F-Droid
 
-Five things, each of which is easy to break:
+Six things, each of which is easy to break:
 
 1. **No proprietary dependencies.** F-Droid's scanner rejects the build if it
    finds one. QR scanning is `com.google.zxing:core`, not ML Kit. Before adding
@@ -28,7 +28,11 @@ Five things, each of which is easy to break:
    NDK. The recipe installs exactly those versions.
 4. **No Play dependency blob.** `dependenciesInfo { includeInApk = false }`,
    because that blob is encrypted and differs on every build.
-5. **A build script that survives having its signing config deleted.** Before
+5. **Keep rules for the JNI bridge.** The release build runs R8, and the Rust
+   cdylib binds its entry points by symbol name, which R8 cannot see.
+   `android/app/proguard-rules.pro` keeps `com.ausha.receiver.Native` and its
+   methods; without it the app builds and then dies on the first native call.
+6. **A build script that survives having its signing config deleted.** Before
    running Gradle, `fdroid build` edits `build.gradle.kts` in place: it deletes
    the whole `signingConfigs { ... }` block and every line matching
    `signingConfig = <no-spaces>`. Anything left dangling by those two deletions
