@@ -1,9 +1,3 @@
-# Our copy of the recipe F-Droid builds from. The one it actually reads lives at
-# metadata/com.ausha.receiver.yml in the fdroiddata repository; fdroid/README.md
-# says how to submit it. Field order below is the one `fdroid rewritemeta`
-# enforces — and note that it strips comments, so anything a reviewer or a
-# future maintainer needs belongs in MaintainerNotes, not up here.
-
 Categories:
   - Connectivity
   - Multimedia
@@ -26,27 +20,14 @@ Builds:
     subdir: android/app
     sudo:
       - apt-get update
-      - apt-get install -y build-essential cmake curl
-      - curl -o /tmp/rustup-init 
-        https://static.rust-lang.org/rustup/archive/1.29.1/x86_64-unknown-linux-gnu/rustup-init
-      - echo 'dda7234360b7f578ca8b0ddcb80145646fa61a67c1720a5abc7051b35c9fcb71 /tmp/rustup-init'
-        | sha256sum -c -
-      - chmod +x /tmp/rustup-init
-      - env RUSTUP_HOME=/opt/rustup CARGO_HOME=/opt/cargo /tmp/rustup-init -y --no-modify-path
-        --profile minimal --default-toolchain 1.92.0 --component clippy --component
-        rustfmt --target aarch64-linux-android --target armv7-linux-androideabi --target
-        x86_64-linux-android
-      - env RUSTUP_HOME=/opt/rustup CARGO_HOME=/opt/cargo /opt/cargo/bin/cargo install
-        cargo-ndk --version 4.1.2 --locked
-      - printf '#!/bin/sh\nexport RUSTUP_HOME=/opt/rustup CARGO_HOME=/opt/cargo\nexport
-        PATH=/opt/cargo/bin:$PATH\nexec /opt/cargo/bin/cargo "$@"\n' > /usr/local/bin/cargo
-      - chmod 0755 /usr/local/bin/cargo
-      - chmod -R a+rwX /opt/rustup /opt/cargo
+      - apt-get install -y build-essential cmake rustup
     gradle:
       - yes
     prebuild:
-      - cargo --version
-      - cargo ndk --version
+      - rustup default 1.92.0
+      - rustup target add aarch64-linux-android armv7-linux-androideabi 
+        x86_64-linux-android
+      - cargo install cargo-ndk --version 4.1.2 --locked
     ndk: 28.2.13676358
 
 MaintainerNotes: |-
@@ -60,19 +41,25 @@ MaintainerNotes: |-
 
   Why the sudo block:
 
-  * There is no Rust in the buildserver image. It is installed into /opt rather
-    than a home directory, with a wrapper at /usr/local/bin/cargo that exports
-    RUSTUP_HOME and CARGO_HOME, because the Gradle task invokes a plain `cargo`
-    and gets no login shell. rustup-init is version-pinned and checksummed.
+  * There is no Rust in the buildserver image, so rustup comes from Debian. Its
+    cargo proxy is /usr/bin/cargo, which is on the default PATH, and cargo-ndk
+    installs into $CARGO_HOME/bin, where cargo looks for subcommands — so the
+    plain `cargo` the Gradle task invokes resolves without a login shell or a
+    wrapper.
   * cmake and a host C compiler are for opusic-sys, which compiles libopus from
     the C sources it vendors.
-  * The --default-toolchain must match rust-toolchain.toml at the repository
-    root, or rustup will try to download the pinned toolchain mid-build. Bump
-    the two together.
+  * The toolchain and targets match rust-toolchain.toml at the repository root,
+    which pins channel 1.92.0 and the three Android targets. Bump them together.
 
   The Gradle task locates the NDK through ANDROID_NDK_HOME and falls back to
   ANDROID_NDK, so the `ndk:` key above is what points it at the right one. It
   is pinned because a different NDK produces a different .so.
+
+  R8 is off: android/app/build.gradle.kts sets isMinifyEnabled = false in the
+  release build type, so the APK carries no R8 marker. The Kotlin side of the
+  native bridge is com.ausha.receiver.Native, whose `external fun`s are bound by
+  symbol name (Java_com_ausha_receiver_Native_*) from the Rust cdylib, so
+  shrinking would need keep rules that do not exist upstream yet.
 
   No proprietary dependencies. QR scanning is com.google.zxing:core over
   CameraX, not ML Kit. The Play dependency-metadata blob and the VCS-info file
