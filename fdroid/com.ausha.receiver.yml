@@ -14,9 +14,9 @@ RepoType: git
 Repo: https://github.com/aaxis-em/ausha.git
 
 Builds:
-  - versionName: 0.1.1
-    versionCode: 2
-    commit: v0.1.1
+  - versionName: 0.1.2
+    versionCode: 3
+    commit: cc877d774869c4e4b13b46b13872dd4525dc2aa0
     subdir: android/app
     sudo:
       - apt-get update
@@ -56,11 +56,13 @@ MaintainerNotes: |-
   ANDROID_NDK, so the `ndk:` key above is what points it at the right one. It
   is pinned because a different NDK produces a different .so.
 
-  R8 is off: android/app/build.gradle.kts sets isMinifyEnabled = false in the
-  release build type, so the APK carries no R8 marker. The Kotlin side of the
-  native bridge is com.ausha.receiver.Native, whose `external fun`s are bound by
-  symbol name (Java_com_ausha_receiver_Native_*) from the Rust cdylib, so
-  shrinking would need keep rules that do not exist upstream yet.
+  R8 is on: android/app/build.gradle.kts sets isMinifyEnabled = true in the
+  release build type, against proguard-android-optimize.txt and the app's own
+  android/app/proguard-rules.pro. That file keeps com.ausha.receiver.Native
+  whole, because the `external fun`s on it are bound by symbol name
+  (Java_com_ausha_receiver_Native_*) from the Rust cdylib and R8 cannot see
+  those uses. Nothing else in the app is reached reflectively, so that one rule
+  is the whole keep set.
 
   No proprietary dependencies. QR scanning is com.google.zxing:core over
   CameraX, not ML Kit. The Play dependency-metadata blob and the VCS-info file
@@ -77,5 +79,5 @@ MaintainerNotes: |-
 
 AutoUpdateMode: Version
 UpdateCheckMode: Tags ^v[0-9.]+$
-CurrentVersion: 0.1.1
-CurrentVersionCode: 2
+CurrentVersion: 0.1.2
+CurrentVersionCode: 3
